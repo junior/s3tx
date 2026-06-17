@@ -15,8 +15,10 @@ Design goals (vs. the old public-bucket version):
   * The authenticated side (this machine) needs AWS credentials + Python. boto3
     is auto-provisioned by uv, so the AWS CLI is not required here either.
 
-Credentials use the standard boto3 chain (env vars, ~/.aws profiles, SSO),
-exactly like the AWS CLI — so whatever worked before works here.
+Credentials: by default the tool uses the dedicated AWS profile named by
+S3TX_PROFILE (default "s3tx"), so it stays on a least-privilege IAM user and does
+NOT touch your shell's default AWS credentials. Set S3TX_PROFILE= (empty) to fall
+back to the standard boto3 chain (env vars, default profile, SSO).
 
 Two workflows
   Send a file OUT (other end downloads):
@@ -25,14 +27,15 @@ Two workflows
       s3tx drop inbox/file.zip        # prints an upload (PUT) link + curl
       s3tx recv inbox/file.zip        # pull it here once they've uploaded
 
-Config via env: S3TX_BUCKET (default s3tx), S3TX_REGION (default us-east-1),
-S3TX_EXPIRES (default 600 = 10 min).
+Config via env: S3TX_PROFILE (default s3tx), S3TX_BUCKET (default s3tx),
+S3TX_REGION (default us-east-1), S3TX_EXPIRES (default 600 = 10 min).
 """
 
 import argparse
 import os
 import sys
 
+PROFILE = os.environ.get("S3TX_PROFILE", "s3tx")
 BUCKET = os.environ.get("S3TX_BUCKET", "s3tx")
 REGION = os.environ.get("S3TX_REGION", "us-east-1")
 EXPIRES = int(os.environ.get("S3TX_EXPIRES", "600"))
@@ -64,24 +67,44 @@ def die(s):
 
 # boto3 is imported lazily inside these helpers so that `s3tx` / `s3tx -h`
 # work with no dependencies and no credentials.
-def _s3():
-    import boto3
+_SESSION = None
 
-    return boto3.client("s3", region_name=REGION)
+
+def _session():
+    """A boto3 Session pinned to S3TX_PROFILE, so the tool uses its own
+    least-privilege IAM user and never the shell's default credentials.
+    Set S3TX_PROFILE= (empty) to use the standard boto3 chain instead."""
+    global _SESSION
+    if _SESSION is None:
+        import boto3
+        from botocore.exceptions import ProfileNotFound
+
+        try:
+            _SESSION = boto3.Session(profile_name=PROFILE or None, region_name=REGION)
+        except ProfileNotFound:
+            die(
+                f"AWS profile '{PROFILE}' not found. Create it with "
+                f"'aws configure --profile {PROFILE}', or set S3TX_PROFILE= to use "
+                "the default credentials."
+            )
+    return _SESSION
+
+
+def _s3():
+    return _session().client("s3")
 
 
 def _preflight():
     """Verify credentials and that the bucket already exists. Never creates anything."""
-    import boto3
-
+    s3 = _s3()
+    where = f"profile '{PROFILE}'" if PROFILE else "the default credential chain"
     try:
-        ident = boto3.client("sts", region_name=REGION).get_caller_identity()
+        ident = _session().client("sts").get_caller_identity()
     except Exception as e:
         die(
-            "AWS credentials are not available or not authorized "
-            f"({e.__class__.__name__}). Configure a profile, SSO, or AWS_* env vars."
+            f"AWS credentials for {where} are not available or not authorized "
+            f"({e.__class__.__name__})."
         )
-    s3 = _s3()
     try:
         s3.head_bucket(Bucket=BUCKET)
     except Exception as e:
@@ -204,6 +227,7 @@ def cmd_rmrf(args):
 
 def cmd_status(args):
     s3, ident = _preflight()
+    info(f"Profile  : {PROFILE or '(default credential chain)'}")
     info(f"Identity : {ident['Arn']}")
     info(f"Bucket   : s3://{BUCKET}    Region: {REGION}")
     private, desc = _public_state(s3)
