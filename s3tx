@@ -1,0 +1,296 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["boto3"]
+# ///
+"""
+s3tx — move files in and out of a locked-down environment through a PRIVATE S3
+bucket, using time-limited pre-signed URLs.
+
+Design goals (vs. the old public-bucket version):
+  * The bucket is NEVER made public. Block Public Access stays fully ON. Access
+    is granted per-object, time-boxed, via a signed URL — not via bucket policy.
+  * The far end (corp laptop, a phone, a friend's place) needs NOTHING but curl
+    or a web browser. No AWS CLI, no credentials there.
+  * The authenticated side (this machine) needs AWS credentials + Python. boto3
+    is auto-provisioned by uv, so the AWS CLI is not required here either.
+
+Credentials use the standard boto3 chain (env vars, ~/.aws profiles, SSO),
+exactly like the AWS CLI — so whatever worked before works here.
+
+Two workflows
+  Send a file OUT (other end downloads):
+      s3tx send report.pdf            # uploads, prints a download link + curl
+  Receive a file IN (other end uploads, no creds needed there):
+      s3tx drop inbox/file.zip        # prints an upload (PUT) link + curl
+      s3tx recv inbox/file.zip        # pull it here once they've uploaded
+
+Config via env: S3TX_BUCKET (default s3tx), S3TX_REGION (default us-east-1),
+S3TX_EXPIRES (default 600 = 10 min).
+"""
+
+import argparse
+import os
+import sys
+
+BUCKET = os.environ.get("S3TX_BUCKET", "s3tx")
+REGION = os.environ.get("S3TX_REGION", "us-east-1")
+EXPIRES = int(os.environ.get("S3TX_EXPIRES", "600"))
+
+# --- tiny color helpers (quiet when not a TTY or NO_COLOR is set) ---
+_tty = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _c(code, s):
+    return f"\033[{code}m{s}\033[0m" if _tty else s
+
+
+def info(s):
+    print(_c("36", s))
+
+
+def ok(s):
+    print(_c("32", s))
+
+
+def warn(s):
+    print(_c("33", s), file=sys.stderr)
+
+
+def die(s):
+    print(_c("31", f"Error: {s}"), file=sys.stderr)
+    sys.exit(1)
+
+
+# boto3 is imported lazily inside these helpers so that `s3tx` / `s3tx -h`
+# work with no dependencies and no credentials.
+def _s3():
+    import boto3
+
+    return boto3.client("s3", region_name=REGION)
+
+
+def _preflight():
+    """Verify credentials and that the bucket already exists. Never creates anything."""
+    import boto3
+
+    try:
+        ident = boto3.client("sts", region_name=REGION).get_caller_identity()
+    except Exception as e:
+        die(
+            "AWS credentials are not available or not authorized "
+            f"({e.__class__.__name__}). Configure a profile, SSO, or AWS_* env vars."
+        )
+    s3 = _s3()
+    try:
+        s3.head_bucket(Bucket=BUCKET)
+    except Exception as e:
+        die(
+            f"bucket s3://{BUCKET} is not accessible in {REGION} "
+            f"({e.__class__.__name__}). s3tx never creates buckets."
+        )
+    return s3, ident
+
+
+def _expiry_note(secs):
+    info(
+        f"\nLink expires in {secs}s (~{max(1, secs // 60)} min). Treat it as a "
+        "secret; the real expiry is also capped by your AWS session length."
+    )
+
+
+def _public_state(s3):
+    try:
+        pab = s3.get_public_access_block(Bucket=BUCKET)["PublicAccessBlockConfiguration"]
+    except Exception:
+        return False, "no Block-Public-Access config set — run: s3tx lockdown"
+    flags = ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
+    if all(pab.get(f) for f in flags):
+        return True, "private (all four Block-Public-Access flags ON)"
+    return False, "PARTIALLY OPEN — run: s3tx lockdown"
+
+
+def cmd_send(args):
+    if not os.path.isfile(args.file):
+        die(f"file not found: {args.file}")
+    key = args.key or os.path.basename(args.file)
+    s3, _ = _preflight()
+    info(f"Uploading {args.file} → s3://{BUCKET}/{key} ...")
+    s3.upload_file(args.file, BUCKET, key)
+    url = s3.generate_presigned_url(
+        "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=args.expires
+    )
+    ok("Uploaded to a private bucket. Share this time-limited download link:")
+    print(url)
+    info("\nOn the far end (wsl-work, Pi, a phone browser, …):")
+    print(f'  tx get "{url}"')
+    info("  …or with plain curl:")
+    print(f'  curl -L -o "{os.path.basename(key)}" "{url}"')
+    _expiry_note(args.expires)
+
+
+def cmd_link(args):
+    s3, _ = _preflight()
+    try:
+        s3.head_object(Bucket=BUCKET, Key=args.key)
+    except Exception:
+        die(f"object not found: s3://{BUCKET}/{args.key}")
+    url = s3.generate_presigned_url(
+        "get_object", Params={"Bucket": BUCKET, "Key": args.key}, ExpiresIn=args.expires
+    )
+    ok(f"Download link for s3://{BUCKET}/{args.key}:")
+    print(url)
+    info("\nOn the far end:")
+    print(f'  tx get "{url}"')
+    print(f'  curl -L -O "{url}"')
+    _expiry_note(args.expires)
+
+
+def cmd_drop(args):
+    s3, _ = _preflight()
+    url = s3.generate_presigned_url(
+        "put_object", Params={"Bucket": BUCKET, "Key": args.key}, ExpiresIn=args.expires
+    )
+    ok(f"Upload link for s3://{BUCKET}/{args.key} (far end needs no AWS creds):")
+    print(url)
+    info("\nOn the far end (wsl-work, Pi, …):")
+    print(f'  tx put <localfile> "{url}"')
+    info("  …or with plain curl:")
+    print(f'  curl -X PUT --upload-file <localfile> "{url}"')
+    info(f"Then pull it here:  s3tx recv {args.key}")
+    _expiry_note(args.expires)
+
+
+def cmd_recv(args):
+    s3, _ = _preflight()
+    out = args.outfile or os.path.basename(args.key)
+    info(f"Downloading s3://{BUCKET}/{args.key} → {out} ...")
+    s3.download_file(BUCKET, args.key, out)
+    ok(f"Saved {out}")
+
+
+def cmd_ls(args):
+    s3, _ = _preflight()
+    n = 0
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=args.prefix or ""):
+        for o in page.get("Contents", []):
+            print(f"{o['LastModified']:%Y-%m-%d %H:%M}  {o['Size']:>12,}  {o['Key']}")
+            n += 1
+    if not n:
+        info("(empty)")
+
+
+def cmd_rm(args):
+    s3, _ = _preflight()
+    s3.delete_object(Bucket=BUCKET, Key=args.key)
+    ok(f"Deleted s3://{BUCKET}/{args.key}")
+
+
+def cmd_rmrf(args):
+    s3, _ = _preflight()
+    warn(f"This will DELETE ALL objects in s3://{BUCKET}")
+    if input("Type DELETE to confirm: ") != "DELETE":
+        warn("Cancelled.")
+        sys.exit(1)
+    keys = [
+        {"Key": o["Key"]}
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET)
+        for o in page.get("Contents", [])
+    ]
+    for i in range(0, len(keys), 1000):
+        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": keys[i : i + 1000]})
+    ok(f"Emptied ({len(keys)} objects).")
+
+
+def cmd_status(args):
+    s3, ident = _preflight()
+    info(f"Identity : {ident['Arn']}")
+    info(f"Bucket   : s3://{BUCKET}    Region: {REGION}")
+    private, desc = _public_state(s3)
+    (ok if private else warn)(f"Public access: {desc}")
+
+
+def cmd_lockdown(args):
+    s3, _ = _preflight()
+    s3.put_public_access_block(
+        Bucket=BUCKET,
+        PublicAccessBlockConfiguration={
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True,
+            "RestrictPublicBuckets": True,
+        },
+    )
+    try:
+        s3.delete_bucket_policy(Bucket=BUCKET)
+    except Exception:
+        pass
+    ok("Locked down: all Block-Public-Access flags ON, any bucket policy removed.")
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="s3tx",
+        description="Move files via a PRIVATE S3 bucket using time-limited pre-signed URLs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    sub = p.add_subparsers(dest="cmd")
+
+    def add(name, fn, help_):
+        sp = sub.add_parser(name, help=help_)
+        sp.set_defaults(fn=fn)
+        return sp
+
+    def with_expiry(sp):
+        sp.add_argument(
+            "--expires", type=int, default=EXPIRES, metavar="SECS",
+            help=f"link lifetime in seconds (default {EXPIRES})",
+        )
+        return sp
+
+    sp = add("send", cmd_send, "upload a file, print a download link for the far end")
+    sp.add_argument("file")
+    sp.add_argument("key", nargs="?", help="S3 key (default: file's basename)")
+    with_expiry(sp)
+
+    sp = add("link", cmd_link, "print a download link for an object already in the bucket")
+    sp.add_argument("key")
+    with_expiry(sp)
+
+    sp = add("drop", cmd_drop, "print an UPLOAD link so the far end can push a file (no creds)")
+    sp.add_argument("key")
+    with_expiry(sp)
+
+    sp = add("recv", cmd_recv, "download an object to this machine")
+    sp.add_argument("key")
+    sp.add_argument("outfile", nargs="?", help="local path (default: key's basename)")
+
+    sp = add("ls", cmd_ls, "list objects in the bucket")
+    sp.add_argument("prefix", nargs="?", help="optional key prefix")
+
+    sp = add("rm", cmd_rm, "delete one object")
+    sp.add_argument("key")
+
+    add("rmrf", cmd_rmrf, "delete EVERY object in the bucket (asks for confirmation)")
+    add("status", cmd_status, "show identity, bucket, and confirm the bucket is private")
+    add("lockdown", cmd_lockdown, "force Block-Public-Access ON and remove any bucket policy")
+    add("help", lambda a: p.print_help(), "show this help")
+
+    args = p.parse_args()
+    if not getattr(args, "cmd", None) or args.cmd == "help":
+        p.print_help()
+        return
+    try:
+        args.fn(args)
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        warn("\nInterrupted.")
+        sys.exit(130)
+    except Exception as e:
+        die(f"{e.__class__.__name__}: {e}")
+
+
+if __name__ == "__main__":
+    main()
