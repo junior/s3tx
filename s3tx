@@ -27,12 +27,15 @@ Two workflows
       s3tx drop inbox/file.zip        # prints an upload (PUT) link + curl
       s3tx recv inbox/file.zip        # pull it here once they've uploaded
 
-Short codes: 's3tx send … --code rep' registers a tiny code in a private manifest;
-the far end runs 'tx get rep' after seeding TX_MANIFEST (see 's3tx manifest-url').
+Short codes — two ways for the far end to use a tiny code instead of a giant URL:
+  --to <client> : scoped, single-use code via the Vercel mediator (needs S3TX_MEDIATOR
+                  + S3TX_ADMIN_TOKEN); the client authenticates with its TX_CLIENT_ID.
+  --code <code> : code stored in a private S3 manifest, no third party (far end seeds
+                  TX_MANIFEST — see 's3tx manifest-url').
 
 Config via env: S3TX_PROFILE (default s3tx), S3TX_BUCKET (default s3tx),
 S3TX_REGION (default us-east-1), S3TX_EXPIRES (default 600 = 10 min),
-S3TX_MANIFEST_KEY (default .s3tx-manifest).
+S3TX_MANIFEST_KEY (default .s3tx-manifest), S3TX_MEDIATOR + S3TX_ADMIN_TOKEN (for --to).
 """
 
 import argparse
@@ -47,6 +50,8 @@ BUCKET = os.environ.get("S3TX_BUCKET", "s3tx")
 REGION = os.environ.get("S3TX_REGION", "us-east-1")
 EXPIRES = int(os.environ.get("S3TX_EXPIRES", "600"))
 MANIFEST_KEY = os.environ.get("S3TX_MANIFEST_KEY", ".s3tx-manifest")
+MEDIATOR = os.environ.get("S3TX_MEDIATOR", "").rstrip("/")
+ADMIN_TOKEN = os.environ.get("S3TX_ADMIN_TOKEN", "")
 
 # --- tiny color helpers (quiet when not a TTY or NO_COLOR is set) ---
 _tty = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -169,8 +174,35 @@ def _manifest_upsert(s3, code, url, expires):
     _manifest_write(s3, kept)
 
 
-def _gen_code(n=4):
-    return "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
+_CODE_ALPHABET = "23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
+
+
+def _gen_code(n=8):
+    return "".join(random.choice(_CODE_ALPHABET) for _ in range(n))
+
+
+def _mediator_register(code, url, client, method, ttl):
+    import json
+    import urllib.error
+    import urllib.request
+
+    if not MEDIATOR or not ADMIN_TOKEN:
+        die("S3TX_MEDIATOR and S3TX_ADMIN_TOKEN must be set to use --to.")
+    body = json.dumps(
+        {"code": code, "url": url, "client": client, "method": method, "ttl": ttl}
+    ).encode()
+    req = urllib.request.Request(
+        f"{MEDIATOR}/api/register",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+    except urllib.error.HTTPError as e:
+        die(f"mediator register failed (HTTP {e.code}): {e.read().decode()[:200]}")
+    except Exception as e:
+        die(f"mediator unreachable: {e}")
 
 
 def cmd_send(args):
@@ -183,7 +215,13 @@ def cmd_send(args):
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=args.expires
     )
-    if args.code is not None:
+    if args.to:
+        code = _gen_code(8)
+        _mediator_register(code, url, args.to, "GET", args.expires)
+        ok(f"Uploaded and registered for client '{args.to}' (single-use).")
+        info("\nOn that machine (tx with TX_MEDIATOR + TX_CLIENT_ID set):")
+        print(f"  tx get {code}")
+    elif args.code is not None:
         code = _gen_code() if args.code == "__auto__" else args.code
         _manifest_upsert(s3, code, url, args.expires)
         ok(f"Uploaded and registered as code '{code}'.")
@@ -221,6 +259,15 @@ def cmd_drop(args):
     url = s3.generate_presigned_url(
         "put_object", Params={"Bucket": BUCKET, "Key": args.key}, ExpiresIn=args.expires
     )
+    if args.to:
+        code = _gen_code(8)
+        _mediator_register(code, url, args.to, "PUT", args.expires)
+        ok(f"Upload slot registered for client '{args.to}' (single-use).")
+        info("\nOn that machine (tx with TX_MEDIATOR + TX_CLIENT_ID set):")
+        print(f"  tx put <localfile> {code}")
+        info(f"Then pull it here:  s3tx recv {args.key}")
+        _expiry_note(args.expires)
+        return
     ok(f"Upload link for s3://{BUCKET}/{args.key} (far end needs no AWS creds):")
     print(url)
     info("\nOn the far end (wsl-work, Pi, …):")
@@ -355,6 +402,10 @@ def main():
         help="also register a short code in the manifest (omit value to auto-generate); "
              "the far end then uses 'tx get CODE'",
     )
+    sp.add_argument(
+        "--to", metavar="CLIENT",
+        help="register a scoped, single-use code via the mediator (S3TX_MEDIATOR) for CLIENT",
+    )
     with_expiry(sp)
 
     sp = add("link", cmd_link, "print a download link for an object already in the bucket")
@@ -363,6 +414,10 @@ def main():
 
     sp = add("drop", cmd_drop, "print an UPLOAD link so the far end can push a file (no creds)")
     sp.add_argument("key")
+    sp.add_argument(
+        "--to", metavar="CLIENT",
+        help="register a scoped, single-use UPLOAD code via the mediator for CLIENT",
+    )
     with_expiry(sp)
 
     sp = add("recv", cmd_recv, "download an object to this machine")
