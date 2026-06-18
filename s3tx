@@ -27,18 +27,26 @@ Two workflows
       s3tx drop inbox/file.zip        # prints an upload (PUT) link + curl
       s3tx recv inbox/file.zip        # pull it here once they've uploaded
 
+Short codes: 's3tx send … --code rep' registers a tiny code in a private manifest;
+the far end runs 'tx get rep' after seeding TX_MANIFEST (see 's3tx manifest-url').
+
 Config via env: S3TX_PROFILE (default s3tx), S3TX_BUCKET (default s3tx),
-S3TX_REGION (default us-east-1), S3TX_EXPIRES (default 600 = 10 min).
+S3TX_REGION (default us-east-1), S3TX_EXPIRES (default 600 = 10 min),
+S3TX_MANIFEST_KEY (default .s3tx-manifest).
 """
 
 import argparse
 import os
+import random
+import string
 import sys
+import time
 
 PROFILE = os.environ.get("S3TX_PROFILE", "s3tx")
 BUCKET = os.environ.get("S3TX_BUCKET", "s3tx")
 REGION = os.environ.get("S3TX_REGION", "us-east-1")
 EXPIRES = int(os.environ.get("S3TX_EXPIRES", "600"))
+MANIFEST_KEY = os.environ.get("S3TX_MANIFEST_KEY", ".s3tx-manifest")
 
 # --- tiny color helpers (quiet when not a TTY or NO_COLOR is set) ---
 _tty = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -133,6 +141,38 @@ def _public_state(s3):
     return False, "PARTIALLY OPEN — run: s3tx lockdown"
 
 
+def _manifest_read(s3):
+    """Return [(code, expires_epoch, url)]; a missing/garbled manifest -> []."""
+    try:
+        body = s3.get_object(Bucket=BUCKET, Key=MANIFEST_KEY)["Body"].read().decode("utf-8")
+    except Exception:
+        return []
+    out = []
+    for line in body.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[1].isdigit():
+            out.append((parts[0], int(parts[1]), parts[2]))
+    return out
+
+
+def _manifest_write(s3, entries):
+    body = "".join(f"{c}\t{e}\t{u}\n" for c, e, u in entries)
+    s3.put_object(
+        Bucket=BUCKET, Key=MANIFEST_KEY, Body=body.encode("utf-8"), ContentType="text/plain"
+    )
+
+
+def _manifest_upsert(s3, code, url, expires):
+    now = int(time.time())
+    kept = [(c, e, u) for (c, e, u) in _manifest_read(s3) if e > now and c != code]
+    kept.append((code, now + expires, url))
+    _manifest_write(s3, kept)
+
+
+def _gen_code(n=4):
+    return "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(n))
+
+
 def cmd_send(args):
     if not os.path.isfile(args.file):
         die(f"file not found: {args.file}")
@@ -143,12 +183,19 @@ def cmd_send(args):
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=args.expires
     )
-    ok("Uploaded to a private bucket. Share this time-limited download link:")
-    print(url)
-    info("\nOn the far end (wsl-work, Pi, a phone browser, …):")
-    print(f'  tx get "{url}"')
-    info("  …or with plain curl:")
-    print(f'  curl -L -o "{os.path.basename(key)}" "{url}"')
+    if args.code is not None:
+        code = _gen_code() if args.code == "__auto__" else args.code
+        _manifest_upsert(s3, code, url, args.expires)
+        ok(f"Uploaded and registered as code '{code}'.")
+        info("\nOn the far end (with TX_MANIFEST seeded — see 's3tx manifest-url'):")
+        print(f"  tx get {code}")
+    else:
+        ok("Uploaded to a private bucket. Share this time-limited download link:")
+        print(url)
+        info("\nOn the far end (wsl-work, Pi, a phone browser, …):")
+        print(f'  tx get "{url}"')
+        info("  …or with plain curl:")
+        print(f'  curl -L -o "{os.path.basename(key)}" "{url}"')
     _expiry_note(args.expires)
 
 
@@ -252,6 +299,33 @@ def cmd_lockdown(args):
     ok("Locked down: all Block-Public-Access flags ON, any bucket policy removed.")
 
 
+def cmd_manifest_url(args):
+    s3, _ = _preflight()
+    days = max(1, min(args.days, 7))
+    if not _manifest_read(s3):
+        _manifest_write(s3, [])  # ensure the object exists so the seed URL resolves
+    url = s3.generate_presigned_url(
+        "get_object", Params={"Bucket": BUCKET, "Key": MANIFEST_KEY}, ExpiresIn=days * 86400
+    )
+    ok(f"Manifest seed URL (valid {days} day(s) — SigV4 max is 7):")
+    print(url)
+    info("\nSeed it on the far end once, then 'tx get <code>' works:")
+    print(f'  export TX_MANIFEST="{url}"')
+    info("  …or persist it (tx reads this when the env var is unset):")
+    print(f'  mkdir -p ~/.config/tx && printf %s "{url}" > ~/.config/tx/manifest.url')
+
+
+def cmd_codes(args):
+    s3, _ = _preflight()
+    now = int(time.time())
+    live = [(c, e, u) for (c, e, u) in _manifest_read(s3) if e > now]
+    if not live:
+        info("(no live codes)")
+        return
+    for c, e, _u in sorted(live, key=lambda x: x[1]):
+        print(f"{c:<12} expires in {(e - now) // 60:>4} min")
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="s3tx",
@@ -276,6 +350,11 @@ def main():
     sp = add("send", cmd_send, "upload a file, print a download link for the far end")
     sp.add_argument("file")
     sp.add_argument("key", nargs="?", help="S3 key (default: file's basename)")
+    sp.add_argument(
+        "--code", nargs="?", const="__auto__", metavar="CODE",
+        help="also register a short code in the manifest (omit value to auto-generate); "
+             "the far end then uses 'tx get CODE'",
+    )
     with_expiry(sp)
 
     sp = add("link", cmd_link, "print a download link for an object already in the bucket")
@@ -299,6 +378,10 @@ def main():
     add("rmrf", cmd_rmrf, "delete EVERY object in the bucket (asks for confirmation)")
     add("status", cmd_status, "show identity, bucket, and confirm the bucket is private")
     add("lockdown", cmd_lockdown, "force Block-Public-Access ON and remove any bucket policy")
+
+    sp = add("manifest-url", cmd_manifest_url, "print a long-lived seed URL to the manifest (for TX_MANIFEST)")
+    sp.add_argument("--days", type=int, default=7, metavar="N", help="lifetime in days (max 7)")
+    add("codes", cmd_codes, "list live manifest codes")
     add("help", lambda a: p.print_help(), "show this help")
 
     args = p.parse_args()
