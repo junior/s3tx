@@ -66,7 +66,7 @@ Examples:
   s3tx ls        list objects      s3tx codes   list live codes
   s3tx recv KEY  download a file   s3tx rm KEY  delete one object
 
-Many files: tar first (built-in, no zip needed), then send/put the single .tgz.
+Many files: tar czf - f1 dir/ | tx put - CODE   (pipe; no temp file, no zip)
 """
 
 # --- tiny color helpers (quiet when not a TTY or NO_COLOR is set) ---
@@ -242,12 +242,20 @@ def _emit_get(s3, key, url, args):
 
 
 def cmd_send(args):
-    if not os.path.isfile(args.file):
-        die(f"file not found: {args.file}")
-    key = args.key or os.path.basename(args.file)
-    s3, _ = _preflight()
-    info(f"Uploading {args.file} → s3://{BUCKET}/{key} ...")
-    s3.upload_file(args.file, BUCKET, key)
+    if args.file == "-":
+        if not args.key:
+            die("reading from stdin needs an explicit key, e.g. s3tx send - bundle.tgz --to wsl-work")
+        key = args.key
+        s3, _ = _preflight()
+        info(f"Uploading (stdin) → s3://{BUCKET}/{key} ...")
+        s3.upload_fileobj(sys.stdin.buffer, BUCKET, key)  # boto3 multipart: handles a pipe
+    else:
+        if not os.path.isfile(args.file):
+            die(f"file not found: {args.file}")
+        key = args.key or os.path.basename(args.file)
+        s3, _ = _preflight()
+        info(f"Uploading {args.file} → s3://{BUCKET}/{key} ...")
+        s3.upload_file(args.file, BUCKET, key)
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=args.expires
     )
@@ -407,7 +415,7 @@ def main():
         return sp
 
     sp = add("send", cmd_send, "upload a file, print a download link for the far end")
-    sp.add_argument("file")
+    sp.add_argument("file", help="local file, or '-' to read stdin (then KEY is required)")
     sp.add_argument("key", nargs="?", help="S3 key (default: file's basename)")
     sp.add_argument(
         "--code", nargs="?", const="__auto__", metavar="CODE",
