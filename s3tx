@@ -53,6 +53,20 @@ MANIFEST_KEY = os.environ.get("S3TX_MANIFEST_KEY", ".s3tx-manifest")
 MEDIATOR = os.environ.get("S3TX_MEDIATOR", "").rstrip("/")
 ADMIN_TOKEN = os.environ.get("S3TX_ADMIN_TOKEN", "")
 
+EPILOG = """\
+How the far end receives it (use with `send` or `link`):
+  --to CLIENT     short code via the mediator (recommended)    far end: tx get CODE
+  --code [CODE]   short code via the S3 manifest (fallback)    far end: tx get CODE
+  (neither)       a plain time-limited URL                     far end: tx get "URL"
+
+Examples:
+  s3tx send report.pdf --to wsl-work     upload + get a code
+  s3tx link report.pdf --to wsl-work     fresh code for a file already in the bucket
+  s3tx drop inbox/x.zip --to wsl-work    upload slot   (far end: tx put FILE CODE)
+  s3tx ls        list objects            s3tx codes   list live manifest codes
+  s3tx recv KEY  download here            s3tx rm KEY  delete one object
+"""
+
 # --- tiny color helpers (quiet when not a TTY or NO_COLOR is set) ---
 _tty = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
@@ -205,6 +219,26 @@ def _mediator_register(code, url, client, method, ttl):
         die(f"mediator unreachable: {e}")
 
 
+def _emit_get(s3, key, url, args):
+    """Print the right thing for a GET pre-signed URL: a mediator code (--to),
+    a manifest code (--code), or the raw time-limited URL."""
+    if args.to:
+        code = _gen_code(8)
+        _mediator_register(code, url, args.to, "GET", args.expires)
+        ok(f"Registered for client '{args.to}' (single-use, expires {args.expires}s). On that machine:")
+        print(f"  tx get {code}")
+    elif args.code is not None:
+        code = _gen_code() if args.code == "__auto__" else args.code
+        _manifest_upsert(s3, code, url, args.expires)
+        ok(f"Registered as manifest code (expires {args.expires}s). On the far end (TX_MANIFEST seeded):")
+        print(f"  tx get {code}")
+    else:
+        ok(f"Time-limited download link (expires {args.expires}s):")
+        print(url)
+        info('On the far end:  tx get "<that url>"   (or: curl -L -O "<that url>")')
+    _expiry_note(args.expires)
+
+
 def cmd_send(args):
     if not os.path.isfile(args.file):
         die(f"file not found: {args.file}")
@@ -215,26 +249,7 @@ def cmd_send(args):
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=args.expires
     )
-    if args.to:
-        code = _gen_code(8)
-        _mediator_register(code, url, args.to, "GET", args.expires)
-        ok(f"Uploaded and registered for client '{args.to}' (single-use).")
-        info("\nOn that machine (tx with TX_MEDIATOR + TX_CLIENT_ID set):")
-        print(f"  tx get {code}")
-    elif args.code is not None:
-        code = _gen_code() if args.code == "__auto__" else args.code
-        _manifest_upsert(s3, code, url, args.expires)
-        ok(f"Uploaded and registered as code '{code}'.")
-        info("\nOn the far end (with TX_MANIFEST seeded — see 's3tx manifest-url'):")
-        print(f"  tx get {code}")
-    else:
-        ok("Uploaded to a private bucket. Share this time-limited download link:")
-        print(url)
-        info("\nOn the far end (wsl-work, Pi, a phone browser, …):")
-        print(f'  tx get "{url}"')
-        info("  …or with plain curl:")
-        print(f'  curl -L -o "{os.path.basename(key)}" "{url}"')
-    _expiry_note(args.expires)
+    _emit_get(s3, key, url, args)
 
 
 def cmd_link(args):
@@ -246,12 +261,7 @@ def cmd_link(args):
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": args.key}, ExpiresIn=args.expires
     )
-    ok(f"Download link for s3://{BUCKET}/{args.key}:")
-    print(url)
-    info("\nOn the far end:")
-    print(f'  tx get "{url}"')
-    print(f'  curl -L -O "{url}"')
-    _expiry_note(args.expires)
+    _emit_get(s3, args.key, url, args)
 
 
 def cmd_drop(args):
@@ -378,7 +388,7 @@ def main():
         prog="s3tx",
         description="Move files via a PRIVATE S3 bucket using time-limited pre-signed URLs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        epilog=EPILOG,
     )
     sub = p.add_subparsers(dest="cmd")
 
@@ -408,8 +418,13 @@ def main():
     )
     with_expiry(sp)
 
-    sp = add("link", cmd_link, "print a download link for an object already in the bucket")
+    sp = add("link", cmd_link, "make a fresh code/link for an object already in the bucket")
     sp.add_argument("key")
+    sp.add_argument("--to", metavar="CLIENT", help="scoped single-use code via the mediator for CLIENT")
+    sp.add_argument(
+        "--code", nargs="?", const="__auto__", metavar="CODE",
+        help="code via the S3 manifest (omit value to auto-generate)",
+    )
     with_expiry(sp)
 
     sp = add("drop", cmd_drop, "print an UPLOAD link so the far end can push a file (no creds)")
