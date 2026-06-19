@@ -62,9 +62,11 @@ How the far end receives it (use with `send` or `link`):
 Examples:
   s3tx send report.pdf --to wsl-work     upload + get a code
   s3tx link report.pdf --to wsl-work     fresh code for a file already in the bucket
-  s3tx drop inbox/x.zip --to wsl-work    upload slot   (far end: tx put FILE CODE)
-  s3tx ls        list objects            s3tx codes   list live manifest codes
-  s3tx recv KEY  download here            s3tx rm KEY  delete one object
+  s3tx drop report.pdf --to wsl-work     receive a file (saved at key 'report.pdf')
+  s3tx ls        list objects      s3tx codes   list live codes
+  s3tx recv KEY  download a file   s3tx rm KEY  delete one object
+
+Many files: tar first (built-in, no zip needed), then send/put the single .tgz.
 """
 
 # --- tiny color helpers (quiet when not a TTY or NO_COLOR is set) ---
