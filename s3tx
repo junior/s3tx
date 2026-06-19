@@ -63,10 +63,19 @@ Examples:
   s3tx send report.pdf --to wsl-work     upload + get a code
   s3tx link report.pdf --to wsl-work     fresh code for a file already in the bucket
   s3tx drop report.pdf --to wsl-work     receive a file (saved at key 'report.pdf')
-  s3tx ls        list objects      s3tx codes   list live codes
-  s3tx recv KEY  download a file   s3tx rm KEY  delete one object
+  s3tx ls                                list objects
+  s3tx codes                             list live codes
+  s3tx recv KEY                          download a file
+  s3tx rm KEY                            delete one object
 
-Many files: tar czf - f1 dir/ | tx put - CODE   (pipe; no temp file, no zip)
+Many files, far end → you:   
+    (Mac)      s3tx drop bundle.tgz --to wsl-work
+    (far end)  tar czf - f1 dir/ | tx put - CODE
+    (Mac)      s3tx recv bundle.tgz             (then: tar xzf bundle.tgz)
+
+Many files, you → far end:
+    (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to wsl-work
+    (far end)  tx get CODE                      (then: tar xzf bundle.tgz)
 """
 
 # --- tiny color helpers (quiet when not a TTY or NO_COLOR is set) ---
