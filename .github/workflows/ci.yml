@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Lint
+        run: uvx ruff check .
+      - name: Format check
+        run: uvx ruff format --check .
+      - name: Test
+        run: uv run --with pytest python -m pytest tests/ -q
+
+  mediator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Syntax-check mediator functions
+        working-directory: mediator
+        run: |
+          node --check api/register.js
+          node --check "api/get/[code].js"
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the tx client (shellcheck ships on ubuntu runners)
+        run: |
+          sh -n tx
+          shellcheck --severity=warning tx

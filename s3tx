@@ -39,16 +39,30 @@ S3TX_MANIFEST_KEY (default .s3tx-manifest), S3TX_MEDIATOR + S3TX_ADMIN_TOKEN (fo
 """
 
 import argparse
+import contextlib
 import os
-import random
-import string
+import secrets
 import sys
 import time
+
+
+def _int_env(name, default):
+    """int() an env var, falling back (with a warning) if it isn't numeric."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"Warning: {name}={raw!r} is not an integer; using {default}.", file=sys.stderr)
+        return default
+
 
 PROFILE = os.environ.get("S3TX_PROFILE", "s3tx")
 BUCKET = os.environ.get("S3TX_BUCKET", "s3tx")
 REGION = os.environ.get("S3TX_REGION", "us-east-1")
-EXPIRES = int(os.environ.get("S3TX_EXPIRES", "600"))
+EXPIRES = _int_env("S3TX_EXPIRES", 600)
+MAX_EXPIRES = 604800  # 7 days — SigV4's hard cap for pre-signed URLs
 MANIFEST_KEY = os.environ.get("S3TX_MANIFEST_KEY", ".s3tx-manifest")
 MEDIATOR = os.environ.get("S3TX_MEDIATOR", "").rstrip("/")
 ADMIN_TOKEN = os.environ.get("S3TX_ADMIN_TOKEN", "")
@@ -60,21 +74,21 @@ How the far end receives it (use with `send` or `link`):
   (neither)       a plain time-limited URL                     far end: tx get "URL"
 
 Examples:
-  s3tx send report.pdf --to wsl-work     upload + get a code
-  s3tx link report.pdf --to wsl-work     fresh code for a file already in the bucket
-  s3tx drop report.pdf --to wsl-work     receive a file (saved at key 'report.pdf')
+  s3tx send report.pdf --to laptop       upload + get a code
+  s3tx link report.pdf --to laptop       fresh code for a file already in the bucket
+  s3tx drop report.pdf --to laptop       receive a file (saved at key 'report.pdf')
   s3tx ls                                list objects
   s3tx codes                             list live codes
   s3tx recv KEY                          download a file
   s3tx rm KEY                            delete one object
 
 Many files, far end → you:   
-    (Mac)      s3tx drop bundle.tgz --to wsl-work
+    (Mac)      s3tx drop bundle.tgz --to laptop
     (far end)  tar czf - f1 dir/ | tx put - CODE
     (Mac)      s3tx recv bundle.tgz             (then: tar xzf bundle.tgz)
 
 Many files, you → far end:
-    (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to wsl-work
+    (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to laptop
     (far end)  tx get CODE                      (then: tar xzf bundle.tgz)
 """
 
@@ -203,7 +217,17 @@ _CODE_ALPHABET = "23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
 
 
 def _gen_code(n=8):
-    return "".join(random.choice(_CODE_ALPHABET) for _ in range(n))
+    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(n))
+
+
+def _clamp_expires(secs):
+    """Pre-signed URLs can't outlive SigV4's 7-day cap; clamp so we never mint a
+    link S3 will reject at redeem time."""
+    return max(1, min(secs, MAX_EXPIRES))
+
+
+class _CodeExists(Exception):
+    """The mediator already holds a live code with this value (HTTP 409)."""
 
 
 def _mediator_register(code, url, client, method, ttl):
@@ -225,23 +249,41 @@ def _mediator_register(code, url, client, method, ttl):
     try:
         urllib.request.urlopen(req, timeout=10).read()
     except urllib.error.HTTPError as e:
+        if e.code == 409:
+            raise _CodeExists from None
         die(f"mediator register failed (HTTP {e.code}): {e.read().decode()[:200]}")
     except Exception as e:
         die(f"mediator unreachable: {e}")
+
+
+def _register_with_retry(url, client, method, ttl, tries=5):
+    """Allocate a unique short code at the mediator, regenerating on the rare
+    collision (HTTP 409) rather than failing."""
+    for _ in range(tries):
+        code = _gen_code(8)
+        try:
+            _mediator_register(code, url, client, method, ttl)
+            return code
+        except _CodeExists:
+            continue
+    die("could not allocate a unique code after several tries; please retry.")
 
 
 def _emit_get(s3, key, url, args):
     """Print the right thing for a GET pre-signed URL: a mediator code (--to),
     a manifest code (--code), or the raw time-limited URL."""
     if args.to:
-        code = _gen_code(8)
-        _mediator_register(code, url, args.to, "GET", args.expires)
-        ok(f"Registered for client '{args.to}' (single-use, expires {args.expires}s). On that machine:")
+        code = _register_with_retry(url, args.to, "GET", args.expires)
+        ok(
+            f"Registered for client '{args.to}' (single-use, expires {args.expires}s). On that machine:"
+        )
         print(f"  tx get {code}")
     elif args.code is not None:
         code = _gen_code() if args.code == "__auto__" else args.code
         _manifest_upsert(s3, code, url, args.expires)
-        ok(f"Registered as manifest code (expires {args.expires}s). On the far end (TX_MANIFEST seeded):")
+        ok(
+            f"Registered as manifest code (expires {args.expires}s). On the far end (TX_MANIFEST seeded):"
+        )
         print(f"  tx get {code}")
     else:
         ok(f"Time-limited download link (expires {args.expires}s):")
@@ -253,7 +295,7 @@ def _emit_get(s3, key, url, args):
 def cmd_send(args):
     if args.file == "-":
         if not args.key:
-            die("reading from stdin needs an explicit key, e.g. s3tx send - bundle.tgz --to wsl-work")
+            die("reading from stdin needs an explicit key, e.g. s3tx send - bundle.tgz --to laptop")
         key = args.key
         s3, _ = _preflight()
         info(f"Uploading (stdin) → s3://{BUCKET}/{key} ...")
@@ -289,8 +331,7 @@ def cmd_drop(args):
         "put_object", Params={"Bucket": BUCKET, "Key": args.key}, ExpiresIn=args.expires
     )
     if args.to:
-        code = _gen_code(8)
-        _mediator_register(code, url, args.to, "PUT", args.expires)
+        code = _register_with_retry(url, args.to, "PUT", args.expires)
         ok(f"Upload slot registered for client '{args.to}' (single-use).")
         info("\nOn that machine (tx with TX_MEDIATOR + TX_CLIENT_ID set):")
         print(f"  tx put <localfile> {code}")
@@ -299,7 +340,7 @@ def cmd_drop(args):
         return
     ok(f"Upload link for s3://{BUCKET}/{args.key} (far end needs no AWS creds):")
     print(url)
-    info("\nOn the far end (wsl-work, Pi, …):")
+    info("\nOn the far end (a laptop, a Pi, …):")
     print(f'  tx put <localfile> "{url}"')
     info("  …or with plain curl:")
     print(f'  curl -X PUT --upload-file <localfile> "{url}"')
@@ -318,7 +359,9 @@ def cmd_recv(args):
 def cmd_ls(args):
     s3, _ = _preflight()
     n = 0
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=args.prefix or ""):
+    for page in s3.get_paginator("list_objects_v2").paginate(
+        Bucket=BUCKET, Prefix=args.prefix or ""
+    ):
         for o in page.get("Contents", []):
             print(f"{o['LastModified']:%Y-%m-%d %H:%M}  {o['Size']:>12,}  {o['Key']}")
             n += 1
@@ -368,10 +411,8 @@ def cmd_lockdown(args):
             "RestrictPublicBuckets": True,
         },
     )
-    try:
+    with contextlib.suppress(Exception):
         s3.delete_bucket_policy(Bucket=BUCKET)
-    except Exception:
-        pass
     ok("Locked down: all Block-Public-Access flags ON, any bucket policy removed.")
 
 
@@ -418,7 +459,10 @@ def main():
 
     def with_expiry(sp):
         sp.add_argument(
-            "--expires", type=int, default=EXPIRES, metavar="SECS",
+            "--expires",
+            type=int,
+            default=EXPIRES,
+            metavar="SECS",
             help=f"link lifetime in seconds (default {EXPIRES})",
         )
         return sp
@@ -427,21 +471,30 @@ def main():
     sp.add_argument("file", help="local file, or '-' to read stdin (then KEY is required)")
     sp.add_argument("key", nargs="?", help="S3 key (default: file's basename)")
     sp.add_argument(
-        "--code", nargs="?", const="__auto__", metavar="CODE",
+        "--code",
+        nargs="?",
+        const="__auto__",
+        metavar="CODE",
         help="also register a short code in the manifest (omit value to auto-generate); "
-             "the far end then uses 'tx get CODE'",
+        "the far end then uses 'tx get CODE'",
     )
     sp.add_argument(
-        "--to", metavar="CLIENT",
+        "--to",
+        metavar="CLIENT",
         help="register a scoped, single-use code via the mediator (S3TX_MEDIATOR) for CLIENT",
     )
     with_expiry(sp)
 
     sp = add("link", cmd_link, "make a fresh code/link for an object already in the bucket")
     sp.add_argument("key")
-    sp.add_argument("--to", metavar="CLIENT", help="scoped single-use code via the mediator for CLIENT")
     sp.add_argument(
-        "--code", nargs="?", const="__auto__", metavar="CODE",
+        "--to", metavar="CLIENT", help="scoped single-use code via the mediator for CLIENT"
+    )
+    sp.add_argument(
+        "--code",
+        nargs="?",
+        const="__auto__",
+        metavar="CODE",
         help="code via the S3 manifest (omit value to auto-generate)",
     )
     with_expiry(sp)
@@ -449,7 +502,8 @@ def main():
     sp = add("drop", cmd_drop, "print an UPLOAD link so the far end can push a file (no creds)")
     sp.add_argument("key")
     sp.add_argument(
-        "--to", metavar="CLIENT",
+        "--to",
+        metavar="CLIENT",
         help="register a scoped, single-use UPLOAD code via the mediator for CLIENT",
     )
     with_expiry(sp)
@@ -468,7 +522,11 @@ def main():
     add("status", cmd_status, "show identity, bucket, and confirm the bucket is private")
     add("lockdown", cmd_lockdown, "force Block-Public-Access ON and remove any bucket policy")
 
-    sp = add("manifest-url", cmd_manifest_url, "print a long-lived seed URL to the manifest (for TX_MANIFEST)")
+    sp = add(
+        "manifest-url",
+        cmd_manifest_url,
+        "print a long-lived seed URL to the manifest (for TX_MANIFEST)",
+    )
     sp.add_argument("--days", type=int, default=7, metavar="N", help="lifetime in days (max 7)")
     add("codes", cmd_codes, "list live manifest codes")
     add("help", lambda a: p.print_help(), "show this help")
@@ -477,6 +535,8 @@ def main():
     if not getattr(args, "cmd", None) or args.cmd == "help":
         p.print_help()
         return
+    if getattr(args, "expires", None) is not None:
+        args.expires = _clamp_expires(args.expires)
     try:
         args.fn(args)
     except SystemExit:

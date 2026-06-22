@@ -1,0 +1,8 @@
+# s3tx is a single PEP 723 script with no .py extension — tell ruff to lint it too.
+extend-include = ["s3tx"]
+target-version = "py39"
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # CLI help/usage strings are intentionally long

@@ -1,0 +1,127 @@
+#!/usr/bin/env sh
+# tx — transfer a file to/from a URL or a short code, using only curl.
+#
+# A URL (e.g. a pre-signed S3 URL) carries its own auth. A short code is resolved
+# to a URL via one of two backends, configured once on this box:
+#   TX_MEDIATOR + TX_CLIENT_ID : authenticated mediator (Vercel). The code is scoped
+#                                to this client and single-use; TX_CLIENT_ID is sent
+#                                as a header, never in a URL, and never typed.
+#   TX_MANIFEST (or ~/.config/tx/manifest.url) : a pre-signed S3 manifest, no 3rd party.
+# Set these ONCE in ~/.config/tx/config (auto-sourced below; chmod 600 — TX_CLIENT_ID is
+# a secret) so you needn't export them in every shell.
+# Portable to anything with a POSIX shell + curl: Linux, WSL, Raspberry Pi, …
+#
+# Usage:
+#   tx get <url|code> [outfile]   download
+#   tx put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
+#   tx help
+
+set -eu
+
+prog=tx
+
+die() { printf '%s: %s\n' "$prog" "$*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+Usage:
+  $prog get <url|code> [outfile]   download (code via TX_MEDIATOR or TX_MANIFEST)
+  $prog put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
+  $prog help
+
+A value starting with http(s):// is used as-is; otherwise it is a short code,
+resolved via \$TX_MEDIATOR (+ \$TX_CLIENT_ID) or \$TX_MANIFEST.
+EOF
+}
+
+command -v curl >/dev/null 2>&1 || die "curl is required but was not found"
+
+# Load machine-local config so TX_MEDIATOR / TX_CLIENT_ID (and/or TX_MANIFEST) can be set
+# once in a file instead of exported in every shell. Skipped when already set in the
+# environment, so a one-off `TX_CLIENT_ID=… tx …` still wins.
+if [ -z "${TX_MEDIATOR:-}${TX_CLIENT_ID:-}" ] && [ -r "$HOME/.config/tx/config" ]; then
+  . "$HOME/.config/tx/config"
+fi
+
+manifest_seed() {
+  if [ -n "${TX_MANIFEST:-}" ]; then
+    printf '%s' "$TX_MANIFEST"
+  elif [ -r "$HOME/.config/tx/manifest.url" ]; then
+    cat "$HOME/.config/tx/manifest.url"
+  fi
+}
+
+# Echo a URL for "$1" (a URL or a short code), or die.
+resolve() {
+  case "$1" in
+    http://* | https://*) printf '%s' "$1"; return ;;
+  esac
+  if [ -n "${TX_MEDIATOR:-}" ]; then
+    [ -n "${TX_CLIENT_ID:-}" ] || die "TX_MEDIATOR is set but TX_CLIENT_ID is not"
+    # Strip stray whitespace/CR — a config saved with Windows CRLF endings leaves a
+    # trailing \r on the value, which silently corrupts the header/URL -> 403.
+    _med=$(printf %s "${TX_MEDIATOR%/}" | tr -d '[:space:]')
+    _cid=$(printf %s "$TX_CLIENT_ID" | tr -d '[:space:]')
+    t=$(mktemp 2>/dev/null) || t="./.tx.$$.r"
+    c=$(curl -sS --connect-timeout 10 --max-time 25 -o "$t" -w '%{http_code}' \
+        -H "X-Client-Id: $_cid" "$_med/api/get/$1") \
+        || { rm -f "$t"; die "mediator unreachable (timed out — is $_med blocked here?)"; }
+    if [ "$c" != 200 ]; then m=$(cat "$t"); rm -f "$t"; die "mediator refused: $m (HTTP $c)"; fi
+    u=$(cat "$t"); rm -f "$t"; printf '%s' "$u"; return
+  fi
+  seed=$(manifest_seed)
+  [ -n "$seed" ] || die "'$1' is not a URL and neither TX_MEDIATOR nor TX_MANIFEST is set"
+  u=$(curl -fsSL --connect-timeout 10 --max-time 25 "$seed" | awk -F'\t' -v k="$1" '$1==k{print $3; f=1} END{exit !f}') \
+    || die "code '$1' not found (manifest empty, code wrong, or seed expired/unreachable)"
+  printf '%s' "$u"
+}
+
+cmd=${1:-help}
+
+case "$cmd" in
+  get)
+    [ $# -ge 2 ] || die "usage: $prog get <url|code> [outfile]"
+    url=$(resolve "$2")
+    out=${3:-}
+    tmp=$(mktemp 2>/dev/null) || tmp="./.tx.$$.tmp"
+    printf 'Downloading ...\n' >&2
+    eff=$(curl -fSL --connect-timeout 15 --progress-bar -o "$tmp" -w '%{url_effective}' "$url") \
+      || { rm -f "$tmp"; die "download failed — link expired/wrong/revoked, or host blocked here"; }
+    if [ -z "$out" ]; then
+      out=${eff%%\?*}
+      out=${out##*/}
+      [ -n "$out" ] || out=download
+    fi
+    mv -f "$tmp" "$out"
+    printf 'Saved %s\n' "$out" >&2
+    ;;
+  put)
+    [ $# -ge 3 ] || die "usage: $prog put <file|-> <url|code>"
+    src=$2
+    url=$(resolve "$3")
+    tmp=
+    if [ "$src" = "-" ]; then
+      # S3 pre-signed PUT needs a known Content-Length; a chunked stdin upload is
+      # rejected (HTTP 501). Spool stdin to a temp file (auto-removed), then PUT.
+      tmp=$(mktemp 2>/dev/null) || tmp="./.tx.$$.put"
+      cat > "$tmp"
+      file=$tmp; label='(stdin)'
+    else
+      [ -f "$src" ] || die "file not found: $src"
+      file=$src; label=$src
+    fi
+    printf 'Uploading %s ...\n' "$label" >&2
+    if ! curl -fSL --connect-timeout 15 --progress-bar -X PUT --upload-file "$file" "$url"; then
+      [ -z "$tmp" ] || rm -f "$tmp"
+      die "upload failed — link expired/wrong/not-a-PUT-URL, or host blocked here"
+    fi
+    [ -z "$tmp" ] || rm -f "$tmp"
+    printf 'Uploaded %s\n' "$label" >&2
+    ;;
+  help | -h | --help | "")
+    usage
+    ;;
+  *)
+    die "unknown command: $cmd (try '$prog help')"
+    ;;
+esac

@@ -1,0 +1,65 @@
+<svg viewBox="0 0 680 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="ttl dsc">
+<title id="ttl">s3tx data flow</title>
+<desc id="dsc">The Mac runs s3tx with AWS credentials: it uploads to a private S3 bucket and registers a short code plus pre-signed URL with the mediator. The short code is carried by hand to the far end, which runs tx with only curl, redeems the code at the mediator for a single-use pre-signed URL, and downloads from S3 directly, never holding any AWS credentials.</desc>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .lbl { fill: #57606a; }
+  .note { fill: #6e7781; }
+  .foot { fill: #57606a; }
+  @media (prefers-color-scheme: dark) {
+    .lbl, .foot { fill: #9aa0a6; }
+    .note { fill: #8b919a; }
+  }
+</style>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" markerWidth="7" markerHeight="7" refX="7" refY="5" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#8a9099" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<!-- connectors -->
+<path d="M168,178 C212,156 226,130 262,118" fill="none" stroke="#8a9099" stroke-width="1.1" marker-end="url(#ar)"/>
+<path d="M168,236 C212,262 230,288 262,300" fill="none" stroke="#8a9099" stroke-width="1.1" marker-end="url(#ar)"/>
+<path d="M512,178 C470,156 452,130 434,118" fill="none" stroke="#8a9099" stroke-width="1.1" marker-end="url(#ar)"/>
+<path d="M512,236 C470,262 452,288 434,300" fill="none" stroke="#8a9099" stroke-width="1.1" marker-end="url(#ar)"/>
+<path d="M99,164 L99,28 L581,28 L581,162" fill="none" stroke="#a8aeb5" stroke-width="1.1" stroke-dasharray="5 4" marker-end="url(#ar)"/>
+
+<!-- step labels -->
+<text class="lbl" x="213" y="140" text-anchor="middle" font-size="11">① upload</text>
+<text class="note" x="213" y="126" text-anchor="middle" font-size="9">(uses creds)</text>
+<text class="lbl" x="213" y="286" text-anchor="middle" font-size="11">② register</text>
+<text class="note" x="213" y="300" text-anchor="middle" font-size="9">(code + url)</text>
+<text class="lbl" x="468" y="140" text-anchor="middle" font-size="11">⑤ download</text>
+<text class="note" x="468" y="126" text-anchor="middle" font-size="9">(no creds)</text>
+<text class="lbl" x="468" y="286" text-anchor="middle" font-size="11">④ redeem</text>
+<text class="note" x="468" y="300" text-anchor="middle" font-size="9">(single-use)</text>
+<text class="lbl" x="340" y="18" text-anchor="middle" font-size="11">③ short code carried by hand</text>
+
+<!-- your Mac -->
+<rect x="24" y="164" width="150" height="86" rx="8" fill="#DDEBF9" stroke="#4A86C5" stroke-width="1"/>
+<text x="99" y="200" text-anchor="middle" font-size="13" font-weight="500" fill="#0B3D6B">your Mac</text>
+<text x="99" y="220" text-anchor="middle" font-size="10.5" fill="#0B3D6B">runs s3tx · AWS creds</text>
+
+<!-- private S3 bucket -->
+<rect x="264" y="48" width="168" height="86" rx="8" fill="#E9ECEF" stroke="#868E96" stroke-width="1"/>
+<text x="348" y="84" text-anchor="middle" font-size="13" font-weight="500" fill="#343A40">private S3 bucket</text>
+<text x="348" y="104" text-anchor="middle" font-size="10.5" fill="#343A40">block public access on</text>
+
+<!-- mediator -->
+<rect x="264" y="262" width="168" height="86" rx="8" fill="#FBEFD3" stroke="#C99A2E" stroke-width="1"/>
+<text x="348" y="294" text-anchor="middle" font-size="13" font-weight="500" fill="#6B4E12">mediator</text>
+<text x="348" y="313" text-anchor="middle" font-size="10.5" fill="#6B4E12">single-use, scoped code</text>
+<text x="348" y="331" text-anchor="middle" font-size="9" fill="#6B4E12">Vercel + Redis</text>
+
+<!-- far end -->
+<rect x="506" y="164" width="150" height="86" rx="8" fill="#D7EFEA" stroke="#2A9D8F" stroke-width="1"/>
+<text x="581" y="194" text-anchor="middle" font-size="13" font-weight="500" fill="#0F5C53">far end</text>
+<text x="581" y="213" text-anchor="middle" font-size="10.5" fill="#0F5C53">runs tx · curl only</text>
+<text x="581" y="231" text-anchor="middle" font-size="9" fill="#0F5C53">laptop · pi · phone</text>
+
+<!-- guarantees -->
+<line x1="60" y1="362" x2="620" y2="362" stroke="#d0d7de" stroke-width="0.5"/>
+<text class="foot" x="140" y="382" text-anchor="middle" font-size="10.5">✓ bucket stays private</text>
+<text class="foot" x="340" y="382" text-anchor="middle" font-size="10.5">✓ creds never leave the Mac</text>
+<text class="foot" x="552" y="382" text-anchor="middle" font-size="10.5">✓ far end: just curl</text>
+</svg>
