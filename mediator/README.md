@@ -60,7 +60,9 @@ Security properties:
    {"<hash-a>":"laptop","<hash-b>":"rpi"}
    ```
    The `clientID` is a secret — store it in the far end's tx config (chmod 600), never
-   in a repo. Adding a machine later = append to `CLIENTS` and redeploy.
+   in a repo. Adding a machine later: `CLIENTS` is a write-only (sensitive) variable and cannot be read
+   back, so put later machines in `CLIENTS_EXTRA` (same `hash -> name` JSON, kept readable)
+   and redeploy; the code merges both maps.
 
 4. **Deploy:** `vercel deploy --prod`. Note the `*.vercel.app` URL.
 

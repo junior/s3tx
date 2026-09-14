@@ -14,12 +14,19 @@ const redis = new Redis({
 const MAX_ATTEMPTS = parseInt(process.env.MAX_ATTEMPTS || "20", 10);
 const WINDOW = 600; // seconds; lockout window per client
 
-function clients() {
+// CLIENTS is a write-only ("sensitive") Vercel variable, so it cannot be read back to
+// append to it. CLIENTS_EXTRA is a second, readable map merged on top: register new
+// machines there and leave CLIENTS untouched.
+function parseMap(raw) {
   try {
-    return JSON.parse(process.env.CLIENTS || "{}");
+    const v = JSON.parse(raw || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
   } catch {
     return {};
   }
+}
+function clients() {
+  return { ...parseMap(process.env.CLIENTS), ...parseMap(process.env.CLIENTS_EXTRA) };
 }
 
 function text(res, status, body) {

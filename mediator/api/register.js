@@ -15,12 +15,19 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN,
 });
 
-function clientNames() {
+// CLIENTS is a write-only ("sensitive") Vercel variable, so it cannot be read back to
+// append to it. CLIENTS_EXTRA is a second, readable map merged on top: register new
+// machines there and leave CLIENTS untouched.
+function parseMap(raw) {
   try {
-    return Object.values(JSON.parse(process.env.CLIENTS || "{}"));
+    const v = JSON.parse(raw || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
   } catch {
-    return [];
+    return {};
   }
+}
+function clientNames() {
+  return Object.values({ ...parseMap(process.env.CLIENTS), ...parseMap(process.env.CLIENTS_EXTRA) });
 }
 
 function safeEqual(a, b) {
