@@ -28,6 +28,13 @@ between tx and the mediator.
 - The mediator creates its per-client rate-limit counter together with its expiry, so
   an interrupted request can no longer lock a client out.
 
+### Fixed
+
+- s3tx signs its presigned URLs with SigV4. Until now they were SigV2, boto3's default
+  for S3 presigning, while the 7-day cap and the docs assumed SigV4. Links keep the
+  same host, so the mediator's URL check is unaffected. With SigV4, `S3TX_REGION` must
+  be the bucket's region.
+
 ### Security
 
 - Short codes come from the `secrets` module instead of `random`.

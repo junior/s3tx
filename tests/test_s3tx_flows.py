@@ -7,7 +7,7 @@ import json
 import re
 import socket
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import harness
 import pytest
@@ -156,14 +156,21 @@ def test_expires_is_capped_at_seven_days(cli, bucket, report):
     assert abs(harness.url_lifetime(_url(out)) - 604800) <= 5
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="boto3 presigns S3 URLs with SigV2 unless s3v4 is configured; s3tx's 7-day "
-    "cap and its comments assume SigV4",
-)
-def test_presigned_urls_use_sigv4(cli, bucket, report):
-    _, out, _ = cli("send", str(report))
-    assert "X-Amz-Algorithm=AWS4-HMAC-SHA256" in _url(out)
+def test_every_presigned_url_is_sigv4_on_the_bucket_host(s3tx, cli, bucket, report):
+    # boto3 would sign with SigV2 by default. The host must not change either: the
+    # mediator only accepts AWS hosts, or exactly ALLOWED_URL_HOST when it is pinned.
+    urls = [
+        _url(cli("send", str(report))[1]),
+        _url(cli("drop", "incoming.zip")[1].split("tx put")[0]),
+        _url(cli("manifest-url")[1].split("Seed it")[0]),
+    ]
+    for url in urls:
+        parts = urlsplit(url)
+        q = parse_qs(parts.query)
+        assert q["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"], url
+        assert q["X-Amz-Credential"][0].endswith("/us-east-1/s3/aws4_request")
+        assert "AWSAccessKeyId" not in q
+        assert parts.netloc == f"{s3tx.BUCKET}.s3.amazonaws.com"
 
 
 @pytest.mark.xfail(
