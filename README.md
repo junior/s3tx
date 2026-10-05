@@ -197,12 +197,20 @@ short-lived URLs and never your AWS credentials. Setup and the threat model are 
 ## Development
 
 ```sh
-uvx ruff check .                                   # lint
-uvx ruff format .                                  # format
-uv run --with pytest python -m pytest tests/ -q    # unit tests (no AWS needed)
+uvx ruff check .                                                   # lint
+uvx ruff format .                                                  # format
+uv run --with-requirements tests/requirements.txt python -m pytest tests/
+(cd mediator && npm test)                                          # mediator handlers
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all three, plus
+No test needs AWS, a deployed mediator or Redis: `s3tx` runs against moto, `tx` runs
+under `sh` and `dash` against a local stand-in for the mediator, full round trips use the
+real scripts and `curl`, and the mediator handlers run against an in-memory Redis. Known
+gaps are tests marked `xfail(strict=True)` or `todo` that describe the intended behaviour.
+The command line is pinned in `tests/golden/cli-contract.json`; after a deliberate change,
+regenerate it with `UPDATE_GOLDEN=1` and review its diff.
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of this, plus
 `node --check` on the mediator functions and `shellcheck` on `tx`.
 
 ## License

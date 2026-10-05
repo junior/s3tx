@@ -15,8 +15,8 @@ jobs:
         run: uvx ruff check .
       - name: Format check
         run: uvx ruff format --check .
-      - name: Test
-        run: uv run --with pytest python -m pytest tests/ -q
+      - name: Test (s3tx and tx against local stand-ins for S3 and the mediator)
+        run: uv run --with-requirements tests/requirements.txt python -m pytest tests/ -q -rxX
 
   mediator:
     runs-on: ubuntu-latest
@@ -30,6 +30,9 @@ jobs:
         run: |
           node --check api/register.js
           node --check "api/get/[code].js"
+      - name: Unit tests (the handlers against an in-memory Redis)
+        working-directory: mediator
+        run: npm test
 
   shell:
     runs-on: ubuntu-latest

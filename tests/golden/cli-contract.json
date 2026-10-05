@@ -1,0 +1,279 @@
+{
+  "prog": "s3tx",
+  "description": "Move files via a PRIVATE S3 bucket using time-limited pre-signed URLs.",
+  "epilog": "How the far end receives it (use with `send` or `link`):\n  --to CLIENT     short code via the mediator (recommended)    far end: tx get CODE\n  --code [CODE]   short code via the S3 manifest (fallback)    far end: tx get CODE\n  (neither)       a plain time-limited URL                     far end: tx get \"URL\"\n\nExamples:\n  s3tx send report.pdf --to laptop       upload + get a code\n  s3tx link report.pdf --to laptop       fresh code for a file already in the bucket\n  s3tx drop report.pdf --to laptop       receive a file (saved at key 'report.pdf')\n  s3tx ls                                list objects\n  s3tx codes                             list live codes\n  s3tx recv KEY                          download a file\n  s3tx rm KEY                            delete one object\n\nMany files, far end \u2192 you:   \n    (Mac)      s3tx drop bundle.tgz --to laptop\n    (far end)  tar czf - f1 dir/ | tx put - CODE\n    (Mac)      s3tx recv bundle.tgz             (then: tar xzf bundle.tgz)\n\nMany files, you \u2192 far end:\n    (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to laptop\n    (far end)  tx get CODE                      (then: tar xzf bundle.tgz)\n",
+  "commands": [
+    {
+      "name": "send",
+      "help": "upload a file, print a download link for the far end",
+      "args": [
+        {
+          "flags": [],
+          "dest": "file",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": true,
+          "metavar": null,
+          "help": "local file, or '-' to read stdin (then KEY is required)"
+        },
+        {
+          "flags": [],
+          "dest": "key",
+          "nargs": "?",
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": null,
+          "help": "S3 key (default: file's basename)"
+        },
+        {
+          "flags": [
+            "--code"
+          ],
+          "dest": "code",
+          "nargs": "?",
+          "const": "__auto__",
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": "CODE",
+          "help": "also register a short code in the manifest (omit value to auto-generate); the far end then uses 'tx get CODE'"
+        },
+        {
+          "flags": [
+            "--to"
+          ],
+          "dest": "to",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": "CLIENT",
+          "help": "register a scoped, single-use code via the mediator (S3TX_MEDIATOR) for CLIENT"
+        },
+        {
+          "flags": [
+            "--expires"
+          ],
+          "dest": "expires",
+          "nargs": null,
+          "const": null,
+          "default": 600,
+          "type": "int",
+          "required": false,
+          "metavar": "SECS",
+          "help": "link lifetime in seconds (default 600)"
+        }
+      ]
+    },
+    {
+      "name": "link",
+      "help": "make a fresh code/link for an object already in the bucket",
+      "args": [
+        {
+          "flags": [],
+          "dest": "key",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": true,
+          "metavar": null,
+          "help": null
+        },
+        {
+          "flags": [
+            "--to"
+          ],
+          "dest": "to",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": "CLIENT",
+          "help": "scoped single-use code via the mediator for CLIENT"
+        },
+        {
+          "flags": [
+            "--code"
+          ],
+          "dest": "code",
+          "nargs": "?",
+          "const": "__auto__",
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": "CODE",
+          "help": "code via the S3 manifest (omit value to auto-generate)"
+        },
+        {
+          "flags": [
+            "--expires"
+          ],
+          "dest": "expires",
+          "nargs": null,
+          "const": null,
+          "default": 600,
+          "type": "int",
+          "required": false,
+          "metavar": "SECS",
+          "help": "link lifetime in seconds (default 600)"
+        }
+      ]
+    },
+    {
+      "name": "drop",
+      "help": "print an UPLOAD link so the far end can push a file (no creds)",
+      "args": [
+        {
+          "flags": [],
+          "dest": "key",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": true,
+          "metavar": null,
+          "help": null
+        },
+        {
+          "flags": [
+            "--to"
+          ],
+          "dest": "to",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": "CLIENT",
+          "help": "register a scoped, single-use UPLOAD code via the mediator for CLIENT"
+        },
+        {
+          "flags": [
+            "--expires"
+          ],
+          "dest": "expires",
+          "nargs": null,
+          "const": null,
+          "default": 600,
+          "type": "int",
+          "required": false,
+          "metavar": "SECS",
+          "help": "link lifetime in seconds (default 600)"
+        }
+      ]
+    },
+    {
+      "name": "recv",
+      "help": "download an object to this machine",
+      "args": [
+        {
+          "flags": [],
+          "dest": "key",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": true,
+          "metavar": null,
+          "help": null
+        },
+        {
+          "flags": [],
+          "dest": "outfile",
+          "nargs": "?",
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": null,
+          "help": "local path (default: key's basename)"
+        }
+      ]
+    },
+    {
+      "name": "ls",
+      "help": "list objects in the bucket",
+      "args": [
+        {
+          "flags": [],
+          "dest": "prefix",
+          "nargs": "?",
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": false,
+          "metavar": null,
+          "help": "optional key prefix"
+        }
+      ]
+    },
+    {
+      "name": "rm",
+      "help": "delete one object",
+      "args": [
+        {
+          "flags": [],
+          "dest": "key",
+          "nargs": null,
+          "const": null,
+          "default": null,
+          "type": null,
+          "required": true,
+          "metavar": null,
+          "help": null
+        }
+      ]
+    },
+    {
+      "name": "rmrf",
+      "help": "delete EVERY object in the bucket (asks for confirmation)",
+      "args": []
+    },
+    {
+      "name": "status",
+      "help": "show identity, bucket, and confirm the bucket is private",
+      "args": []
+    },
+    {
+      "name": "lockdown",
+      "help": "force Block-Public-Access ON and remove any bucket policy",
+      "args": []
+    },
+    {
+      "name": "manifest-url",
+      "help": "print a long-lived seed URL to the manifest (for TX_MANIFEST)",
+      "args": [
+        {
+          "flags": [
+            "--days"
+          ],
+          "dest": "days",
+          "nargs": null,
+          "const": null,
+          "default": 7,
+          "type": "int",
+          "required": false,
+          "metavar": "N",
+          "help": "lifetime in days (max 7)"
+        }
+      ]
+    },
+    {
+      "name": "codes",
+      "help": "list live manifest codes",
+      "args": []
+    },
+    {
+      "name": "help",
+      "help": "show this help",
+      "args": []
+    }
+  ]
+}

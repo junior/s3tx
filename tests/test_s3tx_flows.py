@@ -1,0 +1,423 @@
+"""Every s3tx command against an in-process moto S3 and a local fake mediator: what
+works today, pinned so later changes cannot lose it. Tests marked xfail(strict=True)
+describe the intended behaviour where today's differs; a fix makes them pass, and
+strict mode then fails until the marker is removed."""
+
+import json
+import re
+import socket
+import time
+from urllib.parse import urlsplit
+
+import harness
+import pytest
+
+
+def _url(out):
+    urls = [line.strip().strip('"') for line in out.splitlines() if "://" in line]
+    urls = [u for u in urls if u.startswith(("http://", "https://"))]
+    assert len(urls) == 1, out
+    return urls[0]
+
+
+def _code(out, verb="get"):
+    m = re.search(rf"tx {verb} (?:<localfile> )?(\S+)$", out, re.MULTILINE)
+    assert m, out
+    return m.group(1)
+
+
+def _registrations(server):
+    return [json.loads(r["body"]) for r in server.requests if r["path"] == "/api/register"]
+
+
+def _use_mediator(s3tx, server, monkeypatch):
+    monkeypatch.setattr(s3tx, "MEDIATOR", server.url)
+    monkeypatch.setattr(s3tx, "ADMIN_TOKEN", harness.ADMIN_TOKEN)
+
+
+@pytest.fixture
+def report(tmp_path):
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF-1.4 not really a pdf\n")
+    return f
+
+
+# --- send -------------------------------------------------------------------------
+
+
+def test_send_uploads_and_prints_a_time_limited_link(cli, bucket, report):
+    code, out, _ = cli("send", str(report))
+    assert code == 0
+    assert bucket.get_object(Bucket="s3tx", Key="report.pdf")["Body"].read() == report.read_bytes()
+    url = _url(out)
+    assert urlsplit(url).path.endswith("/report.pdf")
+    assert abs(harness.url_lifetime(url) - 600) <= 5
+    assert 'tx get "<that url>"' in out
+
+
+def test_send_to_an_explicit_key(cli, bucket, report):
+    assert cli("send", str(report), "in/box/r.pdf")[0] == 0
+    assert bucket.head_object(Bucket="s3tx", Key="in/box/r.pdf")["ContentLength"] > 0
+
+
+def test_send_reads_stdin_when_the_file_is_a_dash(cli, bucket):
+    code, out, _ = cli("send", "-", "bundle.tgz", stdin=b"tarball bytes")
+    assert code == 0
+    assert bucket.get_object(Bucket="s3tx", Key="bundle.tgz")["Body"].read() == b"tarball bytes"
+    assert "(stdin)" in out
+
+
+def test_send_from_stdin_needs_a_key(cli, bucket):
+    code, _, err = cli("send", "-", stdin=b"x")
+    assert code == 1
+    assert "reading from stdin needs an explicit key" in err
+
+
+def test_send_a_missing_file_fails(cli, bucket, tmp_path):
+    code, _, err = cli("send", str(tmp_path / "nope.bin"))
+    assert code == 1
+    assert "file not found" in err
+
+
+def test_send_to_a_client_registers_a_single_use_code(
+    s3tx, cli, bucket, server, report, monkeypatch
+):
+    _use_mediator(s3tx, server, monkeypatch)
+    code, out, _ = cli("send", str(report), "--to", "laptop")
+    assert code == 0
+    (reg,) = _registrations(server)
+    (req,) = [r for r in server.requests if r["path"] == "/api/register"]
+    assert req["headers"]["Authorization"] == f"Bearer {harness.ADMIN_TOKEN}"
+    assert reg["client"] == "laptop" and reg["method"] == "GET" and reg["ttl"] == 600
+    assert len(reg["code"]) == 8 and set(reg["code"]) <= set(s3tx._CODE_ALPHABET)
+    assert urlsplit(reg["url"]).path.endswith("/report.pdf")
+    assert _code(out) == reg["code"]
+    assert "single-use" in out
+
+
+def test_send_to_retries_with_a_new_code_on_a_collision(
+    s3tx, cli, bucket, server, report, monkeypatch
+):
+    _use_mediator(s3tx, server, monkeypatch)
+    server.register_replies.append((409, {"error": "code exists"}))
+    code, out, _ = cli("send", str(report), "--to", "laptop")
+    assert code == 0
+    first, second = _registrations(server)
+    assert first["code"] != second["code"]
+    assert _code(out) == second["code"] and second["code"] in server.codes
+
+
+def test_send_to_fails_when_the_mediator_refuses(s3tx, cli, bucket, server, report, monkeypatch):
+    _use_mediator(s3tx, server, monkeypatch)
+    monkeypatch.setattr(s3tx, "ADMIN_TOKEN", "wrong-token")
+    code, _, err = cli("send", str(report), "--to", "laptop")
+    assert code == 1
+    assert "mediator register failed (HTTP 401)" in err
+
+
+def test_send_to_needs_the_mediator_settings(cli, bucket, report):
+    code, _, err = cli("send", str(report), "--to", "laptop")
+    assert code == 1
+    assert "S3TX_MEDIATOR and S3TX_ADMIN_TOKEN must be set to use --to" in err
+
+
+def test_send_to_an_unreachable_mediator_fails(s3tx, cli, bucket, report, monkeypatch):
+    with socket.socket() as s:  # a port nothing listens on
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    monkeypatch.setattr(s3tx, "MEDIATOR", f"http://127.0.0.1:{port}")
+    monkeypatch.setattr(s3tx, "ADMIN_TOKEN", harness.ADMIN_TOKEN)
+    code, _, err = cli("send", str(report), "--to", "laptop")
+    assert code == 1
+    assert "mediator unreachable" in err
+
+
+def test_send_with_a_manifest_code(cli, bucket, report):
+    code, out, _ = cli("send", str(report), "--code", "mycode1")
+    assert code == 0
+    assert _code(out) == "mycode1"
+    body = bucket.get_object(Bucket="s3tx", Key=".s3tx-manifest")["Body"].read().decode()
+    (line,) = body.splitlines()
+    name, expires, url = line.split("\t")
+    assert name == "mycode1" and urlsplit(url).path.endswith("/report.pdf")
+    assert abs(int(expires) - (time.time() + 600)) <= 5
+
+
+def test_send_with_an_auto_generated_manifest_code(s3tx, cli, bucket, report):
+    code, out, _ = cli("send", str(report), "--code")
+    assert code == 0
+    generated = _code(out)
+    assert len(generated) == 8 and set(generated) <= set(s3tx._CODE_ALPHABET)
+
+
+def test_expires_is_capped_at_seven_days(cli, bucket, report):
+    code, out, _ = cli("send", str(report), "--expires", "999999999")
+    assert code == 0
+    assert abs(harness.url_lifetime(_url(out)) - 604800) <= 5
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="boto3 presigns S3 URLs with SigV2 unless s3v4 is configured; s3tx's 7-day "
+    "cap and its comments assume SigV4",
+)
+def test_presigned_urls_use_sigv4(cli, bucket, report):
+    _, out, _ = cli("send", str(report))
+    assert "X-Amz-Algorithm=AWS4-HMAC-SHA256" in _url(out)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="with --to, s3tx prints the requested --expires; the mediator clamps ttl to "
+    "30..900 s and returns the real value, which s3tx discards",
+)
+def test_to_reports_the_lifetime_the_mediator_granted(
+    s3tx, cli, bucket, server, report, monkeypatch
+):
+    _use_mediator(s3tx, server, monkeypatch)
+    _, out, _ = cli("send", str(report), "--to", "laptop", "--expires", "3600")
+    assert "expires 900s" in out and "3600s" not in out
+
+
+# --- link -------------------------------------------------------------------------
+
+
+def test_link_makes_a_fresh_link_for_an_existing_object(cli, bucket):
+    bucket.put_object(Bucket="s3tx", Key="old.txt", Body=b"x")
+    code, out, _ = cli("link", "old.txt")
+    assert code == 0
+    assert urlsplit(_url(out)).path.endswith("/old.txt")
+
+
+def test_link_to_a_client(s3tx, cli, bucket, server, monkeypatch):
+    _use_mediator(s3tx, server, monkeypatch)
+    bucket.put_object(Bucket="s3tx", Key="old.txt", Body=b"x")
+    code, out, _ = cli("link", "old.txt", "--to", "laptop")
+    assert code == 0
+    (reg,) = _registrations(server)
+    assert reg["method"] == "GET" and _code(out) == reg["code"]
+
+
+def test_link_with_a_manifest_code(cli, bucket):
+    bucket.put_object(Bucket="s3tx", Key="old.txt", Body=b"x")
+    code, out, _ = cli("link", "old.txt", "--code", "again12")
+    assert code == 0 and _code(out) == "again12"
+
+
+def test_link_a_missing_object_fails(cli, bucket):
+    code, _, err = cli("link", "never-uploaded.txt")
+    assert code == 1
+    assert "object not found: s3://s3tx/never-uploaded.txt" in err
+
+
+# --- drop and recv ----------------------------------------------------------------
+
+
+def test_drop_prints_an_upload_link(cli, bucket):
+    code, out, _ = cli("drop", "incoming.zip")
+    assert code == 0
+    url = _url(out.split("tx put")[0])
+    assert urlsplit(url).path.endswith("/incoming.zip")
+    assert 'tx put <localfile> "' in out and "curl -X PUT --upload-file" in out
+    assert "s3tx recv incoming.zip" in out
+
+
+def test_drop_to_a_client_registers_an_upload_code(s3tx, cli, bucket, server, monkeypatch):
+    _use_mediator(s3tx, server, monkeypatch)
+    code, out, _ = cli("drop", "incoming.zip", "--to", "laptop")
+    assert code == 0
+    (reg,) = _registrations(server)
+    assert reg["method"] == "PUT" and urlsplit(reg["url"]).path.endswith("/incoming.zip")
+    assert _code(out, "put") == reg["code"]
+    assert "s3tx recv incoming.zip" in out
+
+
+def test_recv_downloads_to_the_basename(cli, bucket, tmp_path, monkeypatch):
+    bucket.put_object(Bucket="s3tx", Key="in/box/file.bin", Body=b"payload")
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = cli("recv", "in/box/file.bin")
+    assert code == 0
+    assert (tmp_path / "file.bin").read_bytes() == b"payload"
+    assert "Saved file.bin" in out
+
+
+def test_recv_to_an_explicit_path(cli, bucket, tmp_path):
+    bucket.put_object(Bucket="s3tx", Key="file.bin", Body=b"payload")
+    target = tmp_path / "elsewhere.bin"
+    assert cli("recv", "file.bin", str(target))[0] == 0
+    assert target.read_bytes() == b"payload"
+
+
+# --- ls, rm, rmrf -----------------------------------------------------------------
+
+
+def test_ls_lists_every_object(cli, bucket):
+    bucket.put_object(Bucket="s3tx", Key="a.txt", Body=b"12345")
+    bucket.put_object(Bucket="s3tx", Key="dir/b.txt", Body=b"x" * 1234)
+    code, out, _ = cli("ls")
+    assert code == 0
+    lines = out.splitlines()
+    assert len(lines) == 2
+    assert re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d +5  a\.txt$", lines[0])
+    assert re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d +1,234  dir/b\.txt$", lines[1])
+
+
+def test_ls_with_a_prefix(cli, bucket):
+    bucket.put_object(Bucket="s3tx", Key="a.txt", Body=b"1")
+    bucket.put_object(Bucket="s3tx", Key="dir/b.txt", Body=b"2")
+    _, out, _ = cli("ls", "dir/")
+    assert out.strip().endswith("dir/b.txt") and "a.txt" not in out
+
+
+def test_ls_of_an_empty_bucket(cli, bucket):
+    assert cli("ls")[1].strip() == "(empty)"
+
+
+def test_rm_deletes_one_object(cli, bucket):
+    bucket.put_object(Bucket="s3tx", Key="a.txt", Body=b"1")
+    bucket.put_object(Bucket="s3tx", Key="b.txt", Body=b"2")
+    code, out, _ = cli("rm", "a.txt")
+    assert code == 0 and "Deleted s3://s3tx/a.txt" in out
+    keys = [o["Key"] for o in bucket.list_objects_v2(Bucket="s3tx")["Contents"]]
+    assert keys == ["b.txt"]
+
+
+def test_rmrf_empties_the_bucket_after_confirmation(cli, bucket):
+    for i in range(3):
+        bucket.put_object(Bucket="s3tx", Key=f"k{i}", Body=b"x")
+    code, out, err = cli("rmrf", answer="DELETE")
+    assert code == 0 and "Emptied (3 objects)." in out
+    assert "DELETE ALL objects in s3://s3tx" in err
+    assert bucket.list_objects_v2(Bucket="s3tx")["KeyCount"] == 0
+
+
+def test_rmrf_cancels_without_the_exact_word(cli, bucket):
+    bucket.put_object(Bucket="s3tx", Key="keep", Body=b"x")
+    code, _, err = cli("rmrf", answer="delete")
+    assert code == 1 and "Cancelled." in err
+    assert bucket.list_objects_v2(Bucket="s3tx")["KeyCount"] == 1
+
+
+# --- status and lockdown ----------------------------------------------------------
+
+
+def test_status_reports_a_private_bucket(cli, bucket):
+    code, out, err = cli("status")
+    assert code == 0
+    assert "Profile  : (default credential chain)" in out
+    assert "Identity : arn:aws:" in out
+    assert "Bucket   : s3://s3tx    Region: us-east-1" in out
+    assert "Public access: private (all four Block-Public-Access flags ON)" in out + err
+
+
+def test_status_warns_when_the_bucket_is_partly_open(cli, bucket):
+    bucket.put_public_access_block(
+        Bucket="s3tx",
+        PublicAccessBlockConfiguration={**harness.PRIVATE, "BlockPublicPolicy": False},
+    )
+    code, _, err = cli("status")
+    assert code == 0
+    assert "PARTIALLY OPEN" in err and "run: s3tx lockdown" in err
+
+
+def test_status_warns_when_there_is_no_block_public_access_config(cli, bucket):
+    bucket.delete_public_access_block(Bucket="s3tx")
+    _, _, err = cli("status")
+    assert "no Block-Public-Access config set" in err
+
+
+def test_lockdown_turns_every_flag_on_and_drops_the_policy(cli, bucket):
+    bucket.delete_public_access_block(Bucket="s3tx")
+    bucket.put_bucket_policy(
+        Bucket="s3tx",
+        Policy=json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Deny",
+                        "Principal": "*",
+                        "Action": "s3:DeleteBucket",
+                        "Resource": "arn:aws:s3:::s3tx",
+                    }
+                ],
+            }
+        ),
+    )
+    code, out, _ = cli("lockdown")
+    assert code == 0 and "Locked down" in out
+    cfg = bucket.get_public_access_block(Bucket="s3tx")["PublicAccessBlockConfiguration"]
+    assert cfg == harness.PRIVATE
+    with pytest.raises(bucket.exceptions.ClientError):
+        bucket.get_bucket_policy(Bucket="s3tx")
+
+
+# --- manifest-url and codes -------------------------------------------------------
+
+
+def test_manifest_url_creates_the_manifest_and_prints_a_seed(cli, bucket):
+    code, out, _ = cli("manifest-url", "--days", "30")
+    assert code == 0
+    assert "valid 7 day(s)" in out
+    assert bucket.head_object(Bucket="s3tx", Key=".s3tx-manifest")["ContentLength"] == 0
+    seed = _url(out.split("Seed it")[0])
+    assert urlsplit(seed).path.endswith("/.s3tx-manifest")
+    assert abs(harness.url_lifetime(seed) - 7 * 86400) <= 5
+    assert 'export TX_MANIFEST="' in out and "~/.config/tx/manifest.url" in out
+
+
+def test_codes_lists_only_live_manifest_codes(cli, bucket):
+    now = int(time.time())
+    body = f"live1\t{now + 3600}\thttps://x/1\ngone1\t{now - 10}\thttps://x/2\n"
+    bucket.put_object(Bucket="s3tx", Key=".s3tx-manifest", Body=body.encode())
+    code, out, _ = cli("codes")
+    assert code == 0
+    assert re.search(r"^live1 +expires in +(59|60) min$", out, re.MULTILINE)
+    assert "gone1" not in out
+
+
+def test_codes_with_none_live(cli, bucket):
+    assert cli("codes")[1].strip() == "(no live codes)"
+
+
+def test_a_new_manifest_code_prunes_expired_entries(cli, bucket, report):
+    now = int(time.time())
+    bucket.put_object(
+        Bucket="s3tx", Key=".s3tx-manifest", Body=f"gone1\t{now - 10}\thttps://x\n".encode()
+    )
+    cli("send", str(report), "--code", "fresh12")
+    body = bucket.get_object(Bucket="s3tx", Key=".s3tx-manifest")["Body"].read().decode()
+    assert [line.split("\t")[0] for line in body.splitlines()] == ["fresh12"]
+
+
+# --- preflight, help, errors ------------------------------------------------------
+
+
+def test_a_missing_bucket_is_never_created(s3tx, cli, bucket, monkeypatch):
+    monkeypatch.setattr(s3tx, "BUCKET", "absent-bucket")
+    code, _, err = cli("ls")
+    assert code == 1
+    assert "bucket s3://absent-bucket is not accessible in us-east-1" in err
+    assert "s3tx never creates buckets" in err
+    names = [b["Name"] for b in bucket.list_buckets()["Buckets"]]
+    assert names == ["s3tx"]
+
+
+def test_an_unknown_profile_fails_clearly(s3tx, cli, bucket, monkeypatch):
+    monkeypatch.setattr(s3tx, "PROFILE", "nope")
+    code, _, err = cli("ls")
+    assert code == 1
+    assert "AWS profile 'nope' not found" in err
+
+
+@pytest.mark.parametrize("argv", [(), ("help",)])
+def test_help_without_credentials(cli, argv):
+    code, out, _ = cli(*argv)
+    assert code == 0
+    assert out.startswith("usage: s3tx")
+    assert "How the far end receives it" in out
+
+
+def test_an_unknown_command_is_a_usage_error(cli):
+    code, _, err = cli("frobnicate")
+    assert code == 2 and "invalid choice" in err
