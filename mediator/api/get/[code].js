@@ -60,7 +60,9 @@ export default async function handler(req, res) {
 
   if (entry.client !== name) return text(res, 403, "not your code"); // scope check (no delete)
 
-  await redis.del(`code:${code}`); // single-use: burn it now that the client is verified
+  // Single use, even when two redeems race past the read above: DEL is atomic and
+  // removes the key for exactly one caller. The other is answered as if it came later.
+  if ((await redis.del(`code:${code}`)) !== 1) return text(res, 404, "not found or expired");
   await redis.decr(rlKey); // a legitimate success shouldn't erode the rate budget
   return text(res, 200, entry.url);
 }

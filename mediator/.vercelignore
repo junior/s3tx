@@ -1,0 +1,2 @@
+# The deployment needs api/ and package.json; the tests stay local.
+test/

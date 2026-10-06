@@ -56,6 +56,8 @@ export class Redis {
     return add(key, -1);
   }
 
+  // Like Redis, 1 for exactly one caller per key and 0 for the rest: the race test in
+  // get.test.mjs depends on it.
   async del(key) {
     await tick();
     return store.delete(key) ? 1 : 0;

@@ -138,12 +138,16 @@ test("successful redemptions do not use up the budget", async () => {
   }
 });
 
-test(
-  "two simultaneous redemptions of one code: exactly one wins",
-  { todo: "get then del is not atomic, so both can win; use GETDEL" },
-  async () => {
-    await seed("Abcd2345");
-    const both = await Promise.all([get("Abcd2345", "laptop-secret"), get("Abcd2345", "laptop-secret")]);
-    assert.deepEqual(both.map((r) => r.statusCode).sort(), [200, 404]);
-  },
-);
+test("simultaneous redemptions of one code: exactly one wins", async () => {
+  // The fake yields on every call, so all three read the code before any deletes it:
+  // the race the single-use check has to survive.
+  await seed("Abcd2345");
+  const all = await Promise.all([1, 2, 3].map(() => get("Abcd2345", "laptop-secret")));
+  const won = all.filter((r) => r.statusCode === 200);
+  assert.equal(won.length, 1);
+  assert.equal(won[0].body, URL_OK);
+  for (const lost of all.filter((r) => r.statusCode !== 200)) {
+    assert.equal(lost.statusCode, 404);
+    assert.equal(lost.body, "not found or expired");
+  }
+});
