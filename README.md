@@ -26,15 +26,20 @@ Raspberry Pi) downloads or uploads with plain `curl`: no AWS account, no CLI, no
 - **One file, no install dance.** A single script with [PEP 723](https://peps.python.org/pep-0723/)
   inline dependencies; [uv](https://docs.astral.sh/uv/) fetches `boto3` on first run.
 
-## Install (the Mac)
+## Install (the trusted machine)
+
+`s3tx` is one file. Take it from a release tag, so you know which version you run:
 
 ```sh
-git clone https://github.com/junior/s3tx.git && cd s3tx
-install -m 755 s3tx ~/bin/s3tx      # or anywhere on your $PATH
+curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.1.0/s3tx -o ~/.local/bin/s3tx
+chmod +x ~/.local/bin/s3tx        # make sure ~/.local/bin is on your $PATH
+s3tx --version
 ```
 
-<sub>The shebang uses `uv run --script`, so the first invocation provisions `boto3`
-automatically: no virtualenv, no `pip install`.</sub>
+<sub>It needs [uv](https://docs.astral.sh/uv/): the shebang runs `uv run --script`, so the
+first invocation provisions Python and `boto3` by itself, with no virtualenv and no
+`pip install`. To follow development instead, clone the repository and link `s3tx` onto
+your `$PATH`.</sub>
 
 One-time AWS setup: a private bucket (Block Public Access on) and an IAM user with the
 policy in [`iam-policy.json`](iam-policy.json), wired to a dedicated profile:
@@ -93,7 +98,7 @@ only `curl`. It runs anywhere with a shell: Linux, WSL, a Raspberry Pi, even a p
 **Install** it on the far-end machine:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/junior/s3tx/main/tx -o ~/.local/bin/tx
+curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.1.0/tx -o ~/.local/bin/tx
 chmod +x ~/.local/bin/tx          # make sure ~/.local/bin is on your $PATH
 ```
 
@@ -144,6 +149,7 @@ code and resolved via the mediator or the manifest.
 | `lockdown` | force Block-Public-Access on, remove any bucket policy |
 | `manifest-url` | print a long-lived seed URL for `--code` (max 7 days) |
 | `codes` | list live manifest codes |
+| `--version` | print the version and exit |
 
 ### Many files
 
@@ -212,6 +218,14 @@ regenerate it with `UPDATE_GOLDEN=1` and review its diff.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of this, plus
 `node --check` on the mediator functions and `shellcheck` on `tx`.
+
+### Releasing
+
+1. Set `__version__` in `s3tx`, date the Unreleased section of
+   [`CHANGELOG.md`](CHANGELOG.md), and move the install lines above to the new tag. The
+   tests fail until the three agree.
+2. Merge, then tag the release commit, signed (`git tag -s vX.Y.Z <commit>`), and push the
+   tag.
 
 ## License
 

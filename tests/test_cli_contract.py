@@ -106,3 +106,10 @@ def test_the_version_is_the_newest_release_in_the_changelog(s3tx):
     changelog = (harness.REPO / "CHANGELOG.md").read_text()
     newest = re.search(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.MULTILINE).group(1)
     assert s3tx.__version__ == newest
+
+
+def test_the_readme_installs_the_current_release(s3tx):
+    # The install lines pin a release tag; a release must move them along with it.
+    readme = (harness.REPO / "README.md").read_text()
+    tags = set(re.findall(r"raw\.githubusercontent\.com/junior/s3tx/([^/]+)/", readme))
+    assert tags == {f"v{s3tx.__version__}"}
