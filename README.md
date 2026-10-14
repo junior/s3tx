@@ -168,7 +168,7 @@ All via environment variables:
 |----------|---------|---------|
 | `S3TX_PROFILE` | `s3tx` | dedicated AWS profile; set empty to use the standard boto3 chain |
 | `S3TX_BUCKET` | `s3tx` | bucket name |
-| `S3TX_REGION` | `us-east-1` | bucket region |
+| `S3TX_REGION` | `us-east-1` | bucket region; on AWS the bucket's own region is detected and used |
 | `S3TX_EXPIRES` | `600` | link lifetime in seconds (clamped to the 7-day SigV4 max) |
 | `S3TX_MANIFEST_KEY` | `.s3tx-manifest` | key of the private manifest object (for `--code`) |
 | `S3TX_MEDIATOR` | — | mediator base URL (for `--to`) |

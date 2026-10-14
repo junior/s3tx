@@ -8,6 +8,13 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+### Changed
+
+- On AWS, s3tx signs links for the region the bucket really lives in, whatever
+  `S3TX_REGION` says, and `status` shows that region. Any other endpoint, such as an
+  S3-compatible service set through `AWS_ENDPOINT_URL`, keeps `S3TX_REGION` as
+  configured.
+
 ## [1.1.0] - 2026-10-13
 
 ### Added

@@ -38,12 +38,13 @@ def sides(s3_endpoint, server, tmp_path):
     for d in (mac, far, home):
         d.mkdir()
 
-    def s3tx(*args, stdin=None):
+    def s3tx(*args, stdin=None, env=None):
         env = {
             **os.environ,
             "AWS_ENDPOINT_URL": s3_endpoint,
             "S3TX_MEDIATOR": server.url,
             "S3TX_ADMIN_TOKEN": harness.ADMIN_TOKEN,
+            **(env or {}),
         }
         r = subprocess.run(
             [sys.executable, str(harness.S3TX), *args],
@@ -151,3 +152,26 @@ def test_a_plain_link_needs_neither(sides):
     url = next(line for line in s3tx("send", "plain.bin").splitlines() if line.startswith("http"))
     tx("get", url, env={})
     assert (far / "plain.bin").read_bytes() == b"no code at all"
+
+
+def test_a_custom_endpoint_keeps_the_configured_region(s3_endpoint, sides):
+    # Only AWS gets the bucket's region detected. Against any other endpoint, here the
+    # local moto server, s3tx signs for S3TX_REGION as configured, even though this
+    # endpoint, like AWS, reports where the bucket lives.
+    s3tx, _tx, mac, _far = sides
+    other = boto3.client("s3", region_name="eu-west-1", endpoint_url=s3_endpoint)
+    other.create_bucket(
+        Bucket="s3tx-eu", CreateBucketConfiguration={"LocationConstraint": "eu-west-1"}
+    )
+    try:
+        probe = boto3.client("s3", region_name="us-east-1", endpoint_url=s3_endpoint)
+        head = probe.head_bucket(Bucket="s3tx-eu")
+        assert head["ResponseMetadata"]["HTTPHeaders"]["x-amz-bucket-region"] == "eu-west-1"
+        (mac / "f.txt").write_bytes(b"x")
+        out = s3tx("send", "f.txt", env={"S3TX_BUCKET": "s3tx-eu"})
+        url = next(line for line in out.splitlines() if line.startswith("http"))
+        assert "%2Fus-east-1%2Fs3%2Faws4_request" in url
+    finally:
+        for o in other.list_objects_v2(Bucket="s3tx-eu").get("Contents", []):
+            other.delete_object(Bucket="s3tx-eu", Key=o["Key"])
+        other.delete_bucket(Bucket="s3tx-eu")

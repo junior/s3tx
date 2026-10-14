@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import harness
@@ -393,6 +394,48 @@ def test_lockdown_turns_every_flag_on_and_drops_the_policy(cli, bucket):
     assert cfg == harness.PRIVATE
     with pytest.raises(bucket.exceptions.ClientError):
         bucket.get_bucket_policy(Bucket="s3tx")
+
+
+# --- regions --------------------------------------------------------------------
+
+
+@pytest.fixture
+def eu_bucket(bucket):
+    """A second bucket, living in eu-west-1 while S3TX_REGION stays us-east-1."""
+    import boto3
+
+    boto3.client("s3", region_name="eu-west-1").create_bucket(
+        Bucket="s3tx-eu", CreateBucketConfiguration={"LocationConstraint": "eu-west-1"}
+    )
+    return "s3tx-eu"
+
+
+def test_on_aws_links_are_signed_for_the_buckets_own_region(
+    s3tx, cli, eu_bucket, report, monkeypatch
+):
+    monkeypatch.setattr(s3tx, "BUCKET", eu_bucket)
+    code, out, _ = cli("send", str(report))
+    assert code == 0
+    q = parse_qs(urlsplit(_url(out)).query)
+    assert q["X-Amz-Credential"][0].endswith("/eu-west-1/s3/aws4_request")
+    assert "Region: eu-west-1" in cli("status")[1]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "aws"),
+    [
+        ("https://s3.amazonaws.com", True),
+        ("https://s3.us-west-2.amazonaws.com", True),
+        ("https://s3.cn-north-1.amazonaws.com.cn", True),
+        ("http://127.0.0.1:9000", False),
+        ("https://storage.example.internal:9021", False),
+        ("https://amazonaws.com.evil.example", False),
+        ("https://evilamazonaws.com", False),
+    ],
+)
+def test_what_counts_as_aws(s3tx, endpoint, aws):
+    client = SimpleNamespace(meta=SimpleNamespace(endpoint_url=endpoint))
+    assert s3tx._on_aws(client) is aws
 
 
 # --- manifest-url and codes -------------------------------------------------------
