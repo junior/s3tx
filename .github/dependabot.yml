@@ -1,0 +1,17 @@
+# Keeps the pinned versions current: the CI actions (pinned by commit SHA), the
+# test-only Python packages and the mediator's npm dependency. Each update arrives as
+# its own pull request and is tested by CI before anyone merges it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /tests
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /mediator
+    schedule:
+      interval: weekly
