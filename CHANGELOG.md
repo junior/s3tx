@@ -8,6 +8,8 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-13
+
 ### Changed
 
 - On AWS, s3tx signs links for the region the bucket really lives in, whatever
@@ -16,7 +18,9 @@ between tx and the mediator.
   configured.
 - s3tx needs Python 3.10 or later, as current boto3 does. uv fetches a suitable Python
   by itself when the machine has none.
-- tx's messages and comments use plain ASCII punctuation; what it does is unchanged.
+- s3tx's help and messages, and tx's messages and comments, use plain ASCII punctuation;
+  what they do is unchanged.
+- The README installs s3tx and tx from a release tag, not from main.
 
 ## [1.1.0] - 2026-10-13
 
@@ -71,6 +75,7 @@ between tx and the mediator.
   policy.
 - `send -` reads stdin.
 
-[Unreleased]: https://github.com/junior/s3tx/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/junior/s3tx/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/junior/s3tx/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/junior/s3tx/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/junior/s3tx/releases/tag/v1.0.0
