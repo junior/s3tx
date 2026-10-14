@@ -14,6 +14,8 @@ between tx and the mediator.
   `S3TX_REGION` says, and `status` shows that region. Any other endpoint, such as an
   S3-compatible service set through `AWS_ENDPOINT_URL`, keeps `S3TX_REGION` as
   configured.
+- s3tx needs Python 3.10 or later, as current boto3 does. uv fetches a suitable Python
+  by itself when the machine has none.
 
 ## [1.1.0] - 2026-10-13
 

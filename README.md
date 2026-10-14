@@ -4,7 +4,7 @@
 > using time-limited pre-signed URLs. The far end needs nothing but `curl`.
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-![python: 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)
+![python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![install: single file](https://img.shields.io/badge/install-single%20file-success.svg)
 ![lint: ruff](https://img.shields.io/badge/lint-ruff-261230.svg)
 ![CI](https://github.com/junior/s3tx/actions/workflows/ci.yml/badge.svg)

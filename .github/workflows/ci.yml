@@ -11,6 +11,9 @@ permissions:
 jobs:
   python:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.14"] # the oldest s3tx supports, and the newest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
@@ -19,7 +22,7 @@ jobs:
       - name: Format check
         run: uvx ruff format --check .
       - name: Test (s3tx and tx against local stand-ins for S3 and the mediator)
-        run: uv run --with-requirements tests/requirements.txt python -m pytest tests/ -q -rxX
+        run: uv run --python ${{ matrix.python }} --with-requirements tests/requirements.txt python -m pytest tests/ -q -rxX
 
   mediator:
     runs-on: ubuntu-latest
