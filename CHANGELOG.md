@@ -27,6 +27,9 @@ between tx and the mediator.
   failing.
 - The mediator creates its per-client rate-limit counter together with its expiry, so
   an interrupted request can no longer lock a client out.
+- `s3tx rm` of a key that is not there fails with "object not found" (exit 1) instead of
+  reporting a deletion. `rm` and `link` report any other lookup error, such as a refused
+  permission, as itself rather than as a missing object.
 
 ### Fixed
 

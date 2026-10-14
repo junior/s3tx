@@ -303,6 +303,28 @@ def test_rm_deletes_one_object(cli, bucket):
     assert keys == ["b.txt"]
 
 
+def test_rm_a_missing_key_says_so_and_fails(cli, bucket):
+    bucket.put_object(Bucket="s3tx", Key="keep.txt", Body=b"1")
+    code, out, err = cli("rm", "never-there.txt")
+    assert code == 1
+    assert "object not found: s3://s3tx/never-there.txt" in err and "Deleted" not in out
+    assert bucket.list_objects_v2(Bucket="s3tx")["KeyCount"] == 1
+
+
+def test_a_refused_lookup_is_not_reported_as_a_missing_object(s3tx, cli, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class Refusing:
+        def head_object(self, **_kw):
+            raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject")
+
+    monkeypatch.setattr(s3tx, "_preflight", lambda: (Refusing(), {}))
+    for argv in (("rm", "x"), ("link", "x")):
+        code, _, err = cli(*argv)
+        assert code == 1
+        assert "403" in err and "object not found" not in err
+
+
 def test_rmrf_empties_the_bucket_after_confirmation(cli, bucket):
     for i in range(3):
         bucket.put_object(Bucket="s3tx", Key=f"k{i}", Body=b"x")
