@@ -8,6 +8,8 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-14
+
 ### Added
 
 - Profiles. `~/.config/s3tx/config` and `~/.config/tx/config` can hold named profiles in
@@ -102,7 +104,8 @@ between tx and the mediator.
   policy.
 - `send -` reads stdin.
 
-[Unreleased]: https://github.com/junior/s3tx/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/junior/s3tx/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/junior/s3tx/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/junior/s3tx/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/junior/s3tx/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/junior/s3tx/releases/tag/v1.0.0
