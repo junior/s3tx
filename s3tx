@@ -172,8 +172,9 @@ def _preflight():
 
 
 def _expiry_note(secs):
+    at = time.strftime("%H:%M", time.localtime(time.time() + secs))
     info(
-        f"\nLink expires in {secs}s (~{max(1, secs // 60)} min). Treat it as a "
+        f"\nLink expires in {secs}s (~{max(1, secs // 60)} min, at {at}). Treat it as a "
         "secret; the real expiry is also capped by your AWS session length."
     )
 
@@ -251,23 +252,28 @@ def _mediator_register(code, url, client, method, ttl):
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {ADMIN_TOKEN}"},
     )
     try:
-        urllib.request.urlopen(req, timeout=10).read()
+        reply = urllib.request.urlopen(req, timeout=10).read()
     except urllib.error.HTTPError as e:
         if e.code == 409:
             raise _CodeExists from None
         die(f"mediator register failed (HTTP {e.code}): {e.read().decode()[:200]}")
     except Exception as e:
         die(f"mediator unreachable: {e}")
+    # The mediator clamps ttl to 30..900 s and answers with what it granted: that, not
+    # the request, is how long the code lives. Fall back to the request if it is silent.
+    try:
+        return int(json.loads(reply).get("ttl", ttl))
+    except (ValueError, TypeError, AttributeError):
+        return ttl
 
 
 def _register_with_retry(url, client, method, ttl, tries=5):
     """Allocate a unique short code at the mediator, regenerating on the rare
-    collision (HTTP 409) rather than failing."""
+    collision (HTTP 409) rather than failing. Returns (code, seconds it lives)."""
     for _ in range(tries):
         code = _gen_code(8)
         try:
-            _mediator_register(code, url, client, method, ttl)
-            return code
+            return code, _mediator_register(code, url, client, method, ttl)
         except _CodeExists:
             continue
     die("could not allocate a unique code after several tries; please retry.")
@@ -276,11 +282,10 @@ def _register_with_retry(url, client, method, ttl, tries=5):
 def _emit_get(s3, key, url, args):
     """Print the right thing for a GET pre-signed URL: a mediator code (--to),
     a manifest code (--code), or the raw time-limited URL."""
+    lives = args.expires
     if args.to:
-        code = _register_with_retry(url, args.to, "GET", args.expires)
-        ok(
-            f"Registered for client '{args.to}' (single-use, expires {args.expires}s). On that machine:"
-        )
+        code, lives = _register_with_retry(url, args.to, "GET", args.expires)
+        ok(f"Registered for client '{args.to}' (single-use, expires {lives}s). On that machine:")
         print(f"  tx get {code}")
     elif args.code is not None:
         code = _gen_code() if args.code == "__auto__" else args.code
@@ -293,7 +298,7 @@ def _emit_get(s3, key, url, args):
         ok(f"Time-limited download link (expires {args.expires}s):")
         print(url)
         info('On the far end:  tx get "<that url>"   (or: curl -L -O "<that url>")')
-    _expiry_note(args.expires)
+    _expiry_note(lives)
 
 
 def cmd_send(args):
@@ -335,12 +340,12 @@ def cmd_drop(args):
         "put_object", Params={"Bucket": BUCKET, "Key": args.key}, ExpiresIn=args.expires
     )
     if args.to:
-        code = _register_with_retry(url, args.to, "PUT", args.expires)
-        ok(f"Upload slot registered for client '{args.to}' (single-use).")
+        code, lives = _register_with_retry(url, args.to, "PUT", args.expires)
+        ok(f"Upload slot registered for client '{args.to}' (single-use, expires {lives}s).")
         info("\nOn that machine (tx with TX_MEDIATOR + TX_CLIENT_ID set):")
         print(f"  tx put <localfile> {code}")
         info(f"Then pull it here:  s3tx recv {args.key}")
-        _expiry_note(args.expires)
+        _expiry_note(lives)
         return
     ok(f"Upload link for s3://{BUCKET}/{args.key} (far end needs no AWS creds):")
     print(url)

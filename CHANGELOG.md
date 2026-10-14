@@ -34,6 +34,8 @@ between tx and the mediator.
   for S3 presigning, while the 7-day cap and the docs assumed SigV4. Links keep the
   same host, so the mediator's URL check is unaffected. With SigV4, `S3TX_REGION` must
   be the bucket's region.
+- With `--to`, s3tx reports how long the code really lives, as the mediator granted it
+  (at most 900 seconds whatever `--expires` asked), and the clock time it dies.
 - The mediator keeps a code single-use when several redemptions of it race: only the
   one whose delete removes the code gets the URL, the others get 404. Before, each of
   them could read the code before any had deleted it, and all got the URL.

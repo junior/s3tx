@@ -173,17 +173,31 @@ def test_every_presigned_url_is_sigv4_on_the_bucket_host(s3tx, cli, bucket, repo
         assert parts.netloc == f"{s3tx.BUCKET}.s3.amazonaws.com"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="with --to, s3tx prints the requested --expires; the mediator clamps ttl to "
-    "30..900 s and returns the real value, which s3tx discards",
+@pytest.mark.parametrize(
+    "argv",
+    [("send", "REPORT", "--to", "laptop"), ("drop", "incoming.zip", "--to", "laptop")],
+    ids=["send", "drop"],
 )
 def test_to_reports_the_lifetime_the_mediator_granted(
+    s3tx, cli, bucket, server, report, monkeypatch, argv
+):
+    # The mediator caps a code at 900 s whatever was asked; the code is what the far end
+    # holds, so its lifetime is the one to print, with the clock time it dies.
+    _use_mediator(s3tx, server, monkeypatch)
+    argv = [str(report) if a == "REPORT" else a for a in argv]
+    code, out, _ = cli(*argv, "--expires", "3600")
+    assert code == 0
+    assert "expires 900s" in out and "3600s" not in out
+    assert re.search(r"Link expires in 900s \(~15 min, at \d\d:\d\d\)", out)
+
+
+def test_a_mediator_that_does_not_say_falls_back_to_the_request(
     s3tx, cli, bucket, server, report, monkeypatch
 ):
     _use_mediator(s3tx, server, monkeypatch)
-    _, out, _ = cli("send", str(report), "--to", "laptop", "--expires", "3600")
-    assert "expires 900s" in out and "3600s" not in out
+    server.register_replies.append((200, {"ok": True}))  # an older mediator: no ttl
+    _, out, _ = cli("send", str(report), "--to", "laptop", "--expires", "300")
+    assert "expires 300s" in out
 
 
 # --- link -------------------------------------------------------------------------
