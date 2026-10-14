@@ -16,9 +16,9 @@ Design goals (vs. the old public-bucket version):
     is auto-provisioned by uv, so the AWS CLI is not required here either.
 
 Credentials: by default the tool uses the dedicated AWS profile named by
-S3TX_PROFILE (default "s3tx"), so it stays on a least-privilege IAM user and does
-NOT touch your shell's default AWS credentials. Set S3TX_PROFILE= (empty) to fall
-back to the standard boto3 chain (env vars, default profile, SSO).
+S3TX_AWS_PROFILE (default "s3tx"; S3TX_PROFILE is the older name for it), so it stays
+on a least-privilege IAM user and does NOT touch your shell's default AWS credentials.
+Set it empty to fall back to the standard boto3 chain (env vars, default profile, SSO).
 
 Two workflows
   Send a file OUT (other end downloads):
@@ -33,24 +33,27 @@ Short codes: two ways for the far end to use a tiny code instead of a giant URL:
   --code <code> : code stored in a private S3 manifest, no third party (far end seeds
                   TX_MANIFEST; see 's3tx manifest-url').
 
-Config via env: S3TX_PROFILE (default s3tx), S3TX_BUCKET (default s3tx),
-S3TX_REGION (default us-east-1), S3TX_EXPIRES (default 600 = 10 min),
-S3TX_MANIFEST_KEY (default .s3tx-manifest), S3TX_MEDIATOR + S3TX_ADMIN_TOKEN (for --to).
+Settings: S3TX_AWS_PROFILE (default s3tx), S3TX_BUCKET (default s3tx), S3TX_REGION
+(default us-east-1), S3TX_ENDPOINT_URL + S3TX_CA_BUNDLE (an S3-compatible server instead
+of AWS), S3TX_EXPIRES (default 600 = 10 min), S3TX_MANIFEST_KEY (default .s3tx-manifest),
+S3TX_MEDIATOR + S3TX_ADMIN_TOKEN (for --to). Set them in the environment or in
+~/.config/s3tx/config, which can also hold named profiles: see `s3tx config`.
 """
 
 import argparse
 import contextlib
 import os
+import re
 import secrets
 import sys
 import time
+from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
-def _int_env(name, default):
-    """int() an env var, falling back (with a warning) if it isn't numeric."""
-    raw = os.environ.get(name)
+def _as_int(name, raw, default):
+    """int() a setting, falling back (with a warning) if it isn't numeric."""
     if not raw:
         return default
     try:
@@ -60,7 +63,15 @@ def _int_env(name, default):
         return default
 
 
-PROFILE = os.environ.get("S3TX_PROFILE", "s3tx")
+def _int_env(name, default):
+    """int() an env var, falling back (with a warning) if it isn't numeric."""
+    return _as_int(name, os.environ.get(name), default)
+
+
+# Settings as the environment gives them; main() resolves them again for the profile in
+# use (see the configuration section below). PROFILE is the AWS credentials profile.
+CONFIG_PROFILE = "default"
+PROFILE = os.environ.get("S3TX_AWS_PROFILE", os.environ.get("S3TX_PROFILE", "s3tx"))
 BUCKET = os.environ.get("S3TX_BUCKET", "s3tx")
 REGION = os.environ.get("S3TX_REGION", "us-east-1")
 EXPIRES = _int_env("S3TX_EXPIRES", 600)
@@ -68,6 +79,8 @@ MAX_EXPIRES = 604800  # 7 days, SigV4's hard cap for pre-signed URLs
 MANIFEST_KEY = os.environ.get("S3TX_MANIFEST_KEY", ".s3tx-manifest")
 MEDIATOR = os.environ.get("S3TX_MEDIATOR", "").rstrip("/")
 ADMIN_TOKEN = os.environ.get("S3TX_ADMIN_TOKEN", "")
+ENDPOINT_URL = os.environ.get("S3TX_ENDPOINT_URL", "")
+CA_BUNDLE = os.environ.get("S3TX_CA_BUNDLE", "")
 
 EPILOG = """\
 How the far end receives it (use with `send` or `link`):
@@ -83,6 +96,7 @@ Examples:
   s3tx codes                             list live codes
   s3tx recv KEY                          download a file
   s3tx rm KEY                            delete one object
+  s3tx --profile NAME config             what the [NAME] profile sets
 
 Many files, far end -> you:
     (Mac)      s3tx drop bundle.tgz --to laptop
@@ -119,15 +133,139 @@ def die(s):
     sys.exit(1)
 
 
+# --- configuration: ~/.config/s3tx/config, with [profile] sections ---------------------
+# KEY=VALUE lines named like the environment variables, `#` comments, optional quotes and
+# `export`, and [name] headers; lines before any header belong to [default]. The file is
+# read, never executed; tx reads ~/.config/tx/config with the same grammar. The default
+# profile lets the environment override the file. A profile chosen with --profile stands
+# alone: only its own lines count, never the environment's or [default]'s.
+
+_SETTINGS = {  # every setting, with its built-in default
+    "S3TX_AWS_PROFILE": "s3tx",
+    "S3TX_BUCKET": "s3tx",
+    "S3TX_REGION": "us-east-1",
+    "S3TX_ENDPOINT_URL": "",
+    "S3TX_CA_BUNDLE": "",
+    "S3TX_EXPIRES": "600",
+    "S3TX_MANIFEST_KEY": ".s3tx-manifest",
+    "S3TX_MEDIATOR": "",
+    "S3TX_ADMIN_TOKEN": "",
+}
+_SECRET_SETTINGS = {"S3TX_ADMIN_TOKEN"}
+_ALIASES = {"S3TX_PROFILE": "S3TX_AWS_PROFILE"}  # v1 name -> current name
+CONFIG_SETTINGS = {}  # the resolved profile: {KEY: (value, source)}
+
+_HEADER = re.compile(r"\[[ \t]*([A-Za-z0-9_.-]+)[ \t]*\][ \t]*(#.*)?")
+_ASSIGN = re.compile(r"(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*)")
+
+
+class _ConfigError(Exception):
+    def __init__(self, line, msg):
+        super().__init__(f"line {line}: {msg}")
+        self.line = line
+
+
+def _parse_config(text):
+    """{section: {KEY: value}} from a config file's text."""
+    sections = {"default": {}}
+    current = "default"
+    for n, raw in enumerate(text.split("\n"), 1):
+        line = raw.strip(" \t\r")
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            m = _HEADER.fullmatch(line)
+            if not m:
+                raise _ConfigError(n, "a section header is [name]: letters, digits, '.', '_', '-'")
+            current = m.group(1)
+            sections.setdefault(current, {})
+            continue
+        m = _ASSIGN.fullmatch(line)
+        if not m:
+            raise _ConfigError(n, "expected KEY=VALUE or a [section] header")
+        key, rest = m.groups()
+        if rest[:1] in ("'", '"'):
+            end = rest.find(rest[0], 1)
+            if end < 0:
+                raise _ConfigError(n, "the quoted value never ends")
+            value, tail = rest[1:end], rest[end + 1 :]
+        elif rest.startswith("#"):
+            value, tail = "", ""
+        else:
+            value, tail = re.match(r"([^ \t]*)(.*)", rest).groups()
+        tail = tail.strip(" \t")
+        if tail and not tail.startswith("#"):
+            raise _ConfigError(n, "a value with spaces needs quotes")
+        sections[current][key] = value
+    return sections
+
+
+def _config_path():
+    return Path.home() / ".config" / "s3tx" / "config"
+
+
+def _env_setting(key):
+    """The environment's value for KEY (or its v1 alias), None when unset."""
+    if key in os.environ:
+        return os.environ[key]
+    old = next((o for o, n in _ALIASES.items() if n == key and o in os.environ), None)
+    return os.environ[old] if old else None
+
+
+def _resolve(profile=None):
+    """(name, {KEY: (value, source)}) for PROFILE, 'default' when none is named."""
+    name = profile or "default"
+    path = _config_path()
+    sections = {}
+    if path.is_file():
+        if path.stat().st_mode & 0o077:
+            warn(
+                f"{path} is readable by other users, and it can hold S3TX_ADMIN_TOKEN: chmod 600 it."
+            )
+        try:
+            sections = _parse_config(path.read_text())
+        except _ConfigError as e:
+            die(f"{path}, {e}")
+        except (OSError, UnicodeDecodeError) as e:
+            die(f"cannot read {path} ({e.__class__.__name__})")
+    if name != "default" and name not in sections:
+        where = f"in {path}" if path.is_file() else f"because {path} does not exist"
+        die(f"there is no profile [{name}] {where}")
+    section = dict(sections.get(name, {}))
+    for old, new in _ALIASES.items():
+        if old in section and new not in section:
+            section[new] = section[old]
+    resolved = {}
+    for key, default in _SETTINGS.items():
+        value, source = (section[key], "file") if key in section else (default, "built-in")
+        env = _env_setting(key) if name == "default" else None
+        resolved[key] = (env, "env") if env is not None else (value, source)
+    return name, resolved
+
+
+def _apply(name, resolved):
+    """Make a resolved profile the settings in use."""
+    global CONFIG_PROFILE, CONFIG_SETTINGS, PROFILE, BUCKET, REGION, EXPIRES, MANIFEST_KEY
+    global MEDIATOR, ADMIN_TOKEN, ENDPOINT_URL, CA_BUNDLE, _SESSION
+    v = {k: value for k, (value, _src) in resolved.items()}
+    CONFIG_PROFILE, CONFIG_SETTINGS = name, resolved
+    PROFILE, BUCKET, REGION = v["S3TX_AWS_PROFILE"], v["S3TX_BUCKET"], v["S3TX_REGION"]
+    EXPIRES = _as_int("S3TX_EXPIRES", v["S3TX_EXPIRES"], 600)
+    MANIFEST_KEY = v["S3TX_MANIFEST_KEY"]
+    MEDIATOR, ADMIN_TOKEN = v["S3TX_MEDIATOR"].rstrip("/"), v["S3TX_ADMIN_TOKEN"]
+    ENDPOINT_URL, CA_BUNDLE = v["S3TX_ENDPOINT_URL"], v["S3TX_CA_BUNDLE"]
+    _SESSION = None
+
+
 # boto3 is imported lazily inside these helpers so that `s3tx` / `s3tx -h`
 # work with no dependencies and no credentials.
 _SESSION = None
 
 
 def _session():
-    """A boto3 Session pinned to S3TX_PROFILE, so the tool uses its own
-    least-privilege IAM user and never the shell's default credentials.
-    Set S3TX_PROFILE= (empty) to use the standard boto3 chain instead."""
+    """A boto3 Session pinned to the AWS profile S3TX_AWS_PROFILE, so the tool uses its
+    own least-privilege IAM user and never the shell's default credentials. Set it empty
+    to use the standard boto3 chain instead."""
     global _SESSION
     if _SESSION is None:
         import boto3
@@ -138,7 +276,7 @@ def _session():
         except ProfileNotFound:
             die(
                 f"AWS profile '{PROFILE}' not found. Create it with "
-                f"'aws configure --profile {PROFILE}', or set S3TX_PROFILE= to use "
+                f"'aws configure --profile {PROFILE}', or set S3TX_AWS_PROFILE= to use "
                 "the default credentials."
             )
     return _SESSION
@@ -147,11 +285,27 @@ def _session():
 def _s3(region=None):
     from botocore.config import Config
 
+    extra = {"endpoint_url": ENDPOINT_URL} if ENDPOINT_URL else {}
+    if CA_BUNDLE:
+        extra["verify"] = CA_BUNDLE
+    region = region or REGION
     # boto3 presigns S3 URLs with the deprecated SigV2 unless told otherwise; the 7-day
     # cap above, and every link the far end receives, assume SigV4.
-    return _session().client(
-        "s3", region_name=region or REGION, config=Config(signature_version="s3v4")
+    s3 = _session().client(
+        "s3", region_name=region, config=Config(signature_version="s3v4"), **extra
     )
+    if _on_aws(s3):
+        return s3
+    # An S3-compatible server: path-style addresses work on every one of them, and
+    # checksums are sent only where the S3 API requires one, since boto3's newer
+    # defaults are refused by many such servers.
+    compat = Config(
+        signature_version="s3v4",
+        s3={"addressing_style": "path"},
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+    )
+    return _session().client("s3", region_name=region, config=compat, **extra)
 
 
 def _on_aws(s3):
@@ -164,21 +318,26 @@ def _on_aws(s3):
 
 
 def _preflight():
-    """Verify credentials and that the bucket already exists. Never creates anything."""
+    """Verify credentials and that the bucket already exists. Never creates anything.
+    On AWS the credentials are checked with STS; an S3-compatible server has no STS, so
+    there the bucket check alone stands for both. Returns (s3, identity or None)."""
     s3 = _s3()
-    where = f"profile '{PROFILE}'" if PROFILE else "the default credential chain"
-    try:
-        ident = _session().client("sts").get_caller_identity()
-    except Exception as e:
-        die(
-            f"AWS credentials for {where} are not available or not authorized "
-            f"({e.__class__.__name__})."
-        )
+    ident = None
+    if _on_aws(s3):
+        where = f"profile '{PROFILE}'" if PROFILE else "the default credential chain"
+        try:
+            ident = _session().client("sts").get_caller_identity()
+        except Exception as e:
+            die(
+                f"AWS credentials for {where} are not available or not authorized "
+                f"({e.__class__.__name__})."
+            )
     try:
         head = s3.head_bucket(Bucket=BUCKET)
     except Exception as e:
+        place = f"in {REGION}" if _on_aws(s3) else f"at {s3.meta.endpoint_url}"
         die(
-            f"bucket s3://{BUCKET} is not accessible in {REGION} "
+            f"bucket s3://{BUCKET} is not accessible {place} "
             f"({e.__class__.__name__}). s3tx never creates buckets."
         )
     # A SigV4 link carries the region, and AWS refuses one signed for the wrong region.
@@ -432,15 +591,29 @@ def cmd_rmrf(args):
 
 def cmd_status(args):
     s3, ident = _preflight()
+    info(f"Config   : profile [{CONFIG_PROFILE}]")
     info(f"Profile  : {PROFILE or '(default credential chain)'}")
-    info(f"Identity : {ident['Arn']}")
+    if ident is None:
+        info(f"Endpoint : {s3.meta.endpoint_url}")
+        info("Identity : not checked (an AWS check; this endpoint is not AWS)")
+    else:
+        info(f"Identity : {ident['Arn']}")
     info(f"Bucket   : s3://{BUCKET}    Region: {s3.meta.region_name}")
+    if ident is None:
+        info("Public access: not checked (Block Public Access is an AWS setting); keep the")
+        info("               bucket private with the server's own controls.")
+        return
     private, desc = _public_state(s3)
     (ok if private else warn)(f"Public access: {desc}")
 
 
 def cmd_lockdown(args):
     s3, _ = _preflight()
+    if not _on_aws(s3):
+        die(
+            "lockdown sets AWS Block Public Access, and this endpoint is not AWS; keep the "
+            "bucket private with the server's own controls."
+        )
     s3.put_public_access_block(
         Bucket=BUCKET,
         PublicAccessBlockConfiguration={
@@ -471,6 +644,16 @@ def cmd_manifest_url(args):
     print(f'  mkdir -p ~/.config/tx && printf %s "{url}" > ~/.config/tx/manifest.url')
 
 
+def cmd_config(args):
+    """Show the settings in effect and where each one comes from; secrets are masked."""
+    path = _config_path()
+    found = "" if path.is_file() else ", which does not exist"
+    info(f"Profile [{CONFIG_PROFILE}] from {path}{found}")
+    for key, (value, source) in CONFIG_SETTINGS.items():
+        shown = f"<set, {len(value)} characters>" if key in _SECRET_SETTINGS and value else value
+        print(f"{key}={shown}  [{source}]")
+
+
 def cmd_codes(args):
     s3, _ = _preflight()
     now = int(time.time())
@@ -483,17 +666,31 @@ def cmd_codes(args):
 
 
 def main():
+    # Settle the profile first: its settings decide the parser's defaults (--expires).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--profile")
+    known, _rest = pre.parse_known_args()
+    _apply(*_resolve(known.profile))
+
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--profile",
+        metavar="NAME",
+        default=argparse.SUPPRESS,
+        help="use the [NAME] section of ~/.config/s3tx/config (default: [default])",
+    )
     p = argparse.ArgumentParser(
         prog="s3tx",
         description="Move files via a PRIVATE S3 bucket using time-limited pre-signed URLs.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=EPILOG,
+        parents=[common],
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     def add(name, fn, help_):
-        sp = sub.add_parser(name, help=help_)
+        sp = sub.add_parser(name, help=help_, parents=[common])
         sp.set_defaults(fn=fn)
         return sp
 
@@ -569,6 +766,7 @@ def main():
     )
     sp.add_argument("--days", type=int, default=7, metavar="N", help="lifetime in days (max 7)")
     add("codes", cmd_codes, "list live manifest codes")
+    add("config", cmd_config, "show the settings in effect and where they come from")
     add("help", lambda a: p.print_help(), "show this help")
 
     args = p.parse_args()

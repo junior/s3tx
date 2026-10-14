@@ -32,8 +32,8 @@ def _registrations(server):
 
 
 def _use_mediator(s3tx, server, monkeypatch):
-    monkeypatch.setattr(s3tx, "MEDIATOR", server.url)
-    monkeypatch.setattr(s3tx, "ADMIN_TOKEN", harness.ADMIN_TOKEN)
+    monkeypatch.setenv("S3TX_MEDIATOR", server.url)
+    monkeypatch.setenv("S3TX_ADMIN_TOKEN", harness.ADMIN_TOKEN)
 
 
 @pytest.fixture
@@ -110,7 +110,7 @@ def test_send_to_retries_with_a_new_code_on_a_collision(
 
 def test_send_to_fails_when_the_mediator_refuses(s3tx, cli, bucket, server, report, monkeypatch):
     _use_mediator(s3tx, server, monkeypatch)
-    monkeypatch.setattr(s3tx, "ADMIN_TOKEN", "wrong-token")
+    monkeypatch.setenv("S3TX_ADMIN_TOKEN", "wrong-token")
     code, _, err = cli("send", str(report), "--to", "laptop")
     assert code == 1
     assert "mediator register failed (HTTP 401)" in err
@@ -126,8 +126,8 @@ def test_send_to_an_unreachable_mediator_fails(s3tx, cli, bucket, report, monkey
     with socket.socket() as s:  # a port nothing listens on
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    monkeypatch.setattr(s3tx, "MEDIATOR", f"http://127.0.0.1:{port}")
-    monkeypatch.setattr(s3tx, "ADMIN_TOKEN", harness.ADMIN_TOKEN)
+    monkeypatch.setenv("S3TX_MEDIATOR", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv("S3TX_ADMIN_TOKEN", harness.ADMIN_TOKEN)
     code, _, err = cli("send", str(report), "--to", "laptop")
     assert code == 1
     assert "mediator unreachable" in err
@@ -413,7 +413,7 @@ def eu_bucket(bucket):
 def test_on_aws_links_are_signed_for_the_buckets_own_region(
     s3tx, cli, eu_bucket, report, monkeypatch
 ):
-    monkeypatch.setattr(s3tx, "BUCKET", eu_bucket)
+    monkeypatch.setenv("S3TX_BUCKET", eu_bucket)
     code, out, _ = cli("send", str(report))
     assert code == 0
     q = parse_qs(urlsplit(_url(out)).query)
@@ -480,7 +480,7 @@ def test_a_new_manifest_code_prunes_expired_entries(cli, bucket, report):
 
 
 def test_a_missing_bucket_is_never_created(s3tx, cli, bucket, monkeypatch):
-    monkeypatch.setattr(s3tx, "BUCKET", "absent-bucket")
+    monkeypatch.setenv("S3TX_BUCKET", "absent-bucket")
     code, _, err = cli("ls")
     assert code == 1
     assert "bucket s3://absent-bucket is not accessible in us-east-1" in err
@@ -490,7 +490,7 @@ def test_a_missing_bucket_is_never_created(s3tx, cli, bucket, monkeypatch):
 
 
 def test_an_unknown_profile_fails_clearly(s3tx, cli, bucket, monkeypatch):
-    monkeypatch.setattr(s3tx, "PROFILE", "nope")
+    monkeypatch.setenv("S3TX_AWS_PROFILE", "nope")
     code, _, err = cli("ls")
     assert code == 1
     assert "AWS profile 'nope' not found" in err

@@ -3,7 +3,9 @@ sh is dash, a Mac's is bash), with a throwaway HOME and a local stand-in for the
 mediator and for presigned URLs. Tests marked xfail(strict=True) describe intended
 behaviour that differs from today's."""
 
+import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -13,6 +15,9 @@ import harness
 import pytest
 
 SHELLS = sorted({p for p in (shutil.which("sh"), shutil.which("dash")) if p})
+FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "config")
+with open(os.path.join(FIXTURES, "expected.json")) as _f:
+    EXPECTED = json.load(_f)
 
 
 @pytest.fixture(params=SHELLS, ids=lambda p: os.path.basename(p))
@@ -48,6 +53,7 @@ def _config(tx, text):
     cfg = tx.home / ".config" / "tx"
     cfg.mkdir(parents=True, exist_ok=True)
     (cfg / "config").write_text(text)
+    (cfg / "config").chmod(0o600)  # as tx-enroll.sh leaves it
 
 
 def _register(server, code, url, method="GET"):
@@ -193,11 +199,6 @@ def test_a_code_with_nothing_configured(tx):
     assert b"is not a URL and neither TX_MEDIATOR nor TX_MANIFEST is set" in r.stderr
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="tx sources ~/.config/tx/config only when BOTH TX_MEDIATOR and TX_CLIENT_ID are "
-    "unset, so setting one in the environment loses the other from the file",
-)
 def test_one_setting_in_the_environment_and_the_other_in_the_config(tx, server):
     server.files["r.txt"] = b"x"
     _register(server, "Code2345", f"{server.url}/files/r.txt")
@@ -269,3 +270,136 @@ def test_a_refused_put(tx, server):
     (tx.work / "up.bin").write_bytes(b"x")
     r = tx("put", "up.bin", f"{server.url}/elsewhere/up.bin")
     assert r.returncode == 1 and b"upload failed" in r.stderr
+
+
+# --- the config file: the grammar shared with s3tx, and profiles -----------------------
+
+
+def _shown(out):
+    """{KEY: shown value} from `tx config`, where secrets appear as their length."""
+    return dict(re.findall(r"^(TX_\w+)=(.*?)  \[", out.decode(), re.MULTILINE))
+
+
+def _masked(value):
+    return f"<set, {len(value)} characters>" if value else ""
+
+
+@pytest.mark.parametrize(
+    ("name", "section"),
+    [(n, sec) for n, want in sorted(EXPECTED.items()) if "error_line" not in want for sec in want]
+    + [(n, "default") for n, want in sorted(EXPECTED.items()) if "error_line" in want],
+)
+def test_the_grammar_matches_s3tx(tx, name, section):
+    # The same fixture files s3tx's reader is held to; tx shows secrets by length only.
+    want = EXPECTED[name]
+    with open(os.path.join(FIXTURES, name), "rb") as f:
+        _config(tx, f.read().decode("ascii"))
+    r = tx("--profile", section, "config")
+    if "error_line" in want:
+        assert r.returncode == 1 and f"line {want['error_line']}:".encode() in r.stderr
+        return
+    assert r.returncode == 0, r.stderr
+    vals, shown = want[section], _shown(r.stdout)
+    assert shown["TX_MEDIATOR"] == vals.get("TX_MEDIATOR", "")
+    assert shown["TX_CLIENT_ID"] == _masked(vals.get("TX_CLIENT_ID", ""))
+    assert shown["TX_MANIFEST"] == _masked(vals.get("TX_MANIFEST", ""))
+
+
+PROFILES = """\
+TX_MEDIATOR={default_mediator}
+TX_CLIENT_ID=wrong-client
+
+[k8s]
+TX_MEDIATOR={k8s_mediator}
+TX_CLIENT_ID={client}
+"""
+
+
+def _profiles(tx, server):
+    _config(
+        tx,
+        PROFILES.format(
+            default_mediator=_closed_port_url(), k8s_mediator=server.url, client=harness.CLIENT_ID
+        ),
+    )
+
+
+@pytest.mark.parametrize("flag", [("--profile", "k8s"), ("--profile=k8s",)])
+def test_a_profile_picks_its_own_mediator(tx, server, flag):
+    server.files["r.txt"] = b"through the k8s profile"
+    _register(server, "Code2345", f"{server.url}/files/r.txt")
+    _profiles(tx, server)
+    r = tx(*flag, "get", "Code2345")
+    assert r.returncode == 0, r.stderr
+    assert (tx.work / "r.txt").read_bytes() == b"through the k8s profile"
+
+
+def test_a_named_profile_ignores_the_environment(tx, server):
+    # An exported TX_MEDIATOR must not pull a named profile's code to another mediator.
+    server.files["r.txt"] = b"x"
+    _register(server, "Code2345", f"{server.url}/files/r.txt")
+    _profiles(tx, server)
+    env = {"TX_MEDIATOR": _closed_port_url(), "TX_CLIENT_ID": "env-client"}
+    r = tx("--profile", "k8s", "get", "Code2345", env=env)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_default_profile_lets_the_environment_win(tx, server):
+    server.files["r.txt"] = b"x"
+    _register(server, "Code2345", f"{server.url}/files/r.txt")
+    _profiles(tx, server)  # its [default] points at a closed port with a wrong client
+    r = tx("get", "Code2345", env=_mediator_env(server))
+    assert r.returncode == 0, r.stderr
+
+
+def test_config_shows_the_settings_and_their_sources_with_secrets_masked(tx, server):
+    _profiles(tx, server)
+    r = tx("config", env={"TX_MEDIATOR": "https://from-env.example"})
+    out = r.stdout.decode()
+    assert r.returncode == 0 and "Profile [default]" in out
+    assert "TX_MEDIATOR=https://from-env.example  [env]" in out
+    assert "TX_CLIENT_ID=<set, 12 characters>  [file]" in out and "wrong-client" not in out
+    assert "TX_MANIFEST=  [unset]" in out
+    k8s = tx("--profile", "k8s", "config").stdout.decode()
+    assert f"TX_MEDIATOR={server.url}  [file]" in k8s and harness.CLIENT_ID not in k8s
+
+
+def test_an_unknown_profile_is_an_error(tx, server):
+    _profiles(tx, server)
+    r = tx("--profile", "nope", "get", "Code2345")
+    assert r.returncode == 1 and b"there is no profile [nope] in " in r.stderr
+
+
+def test_a_named_profile_needs_the_file(tx):
+    r = tx("--profile", "k8s", "get", "Code2345")
+    assert r.returncode == 1 and b"does not exist" in r.stderr
+
+
+@pytest.mark.parametrize("name", ["", "bad name", "../etc"])
+def test_a_profile_name_is_checked(tx, name):
+    r = tx("--profile", name, "config")
+    assert r.returncode == 1 and b"a profile name is letters" in r.stderr
+
+
+def test_a_config_others_can_read_gets_a_warning(tx, server):
+    _profiles(tx, server)
+    (tx.home / ".config" / "tx" / "config").chmod(0o644)
+    r = tx("config")
+    assert r.returncode == 0 and b"readable by other users" in r.stderr
+
+
+def test_help_works_even_with_a_broken_config(tx):
+    _config(tx, "this is not a setting\n")
+    assert tx("help").returncode == 0
+    r = tx("config")
+    assert r.returncode == 1 and b"line 1:" in r.stderr
+
+
+def test_a_named_profile_does_not_use_the_default_manifest_file(tx, server):
+    server.files["m.txt"] = b"x"
+    server.manifest = f"Mani2345\t9999999999\t{server.url}/files/m.txt\n"
+    _config(tx, "[other]\nTX_MEDIATOR=\n")
+    (tx.home / ".config" / "tx" / "manifest.url").write_text(f"{server.url}/manifest")
+    assert tx("get", "Mani2345").returncode == 0  # [default] may use manifest.url
+    r = tx("--profile", "other", "get", "Mani2345", "again.txt")
+    assert r.returncode == 1 and b"neither TX_MEDIATOR nor TX_MANIFEST is set" in r.stderr

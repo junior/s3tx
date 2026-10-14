@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from urllib.parse import urlsplit
 
 import boto3
 import harness
@@ -175,3 +176,74 @@ def test_a_custom_endpoint_keeps_the_configured_region(s3_endpoint, sides):
         for o in other.list_objects_v2(Bucket="s3tx-eu").get("Contents", []):
             other.delete_object(Bucket="s3tx-eu", Key=o["Key"])
         other.delete_bucket(Bucket="s3tx-eu")
+
+
+def test_a_generic_s3_profile_end_to_end(s3_endpoint, server, tmp_path):
+    # A named profile for an S3-compatible server with its own mediator, used from both
+    # ends with --profile, while the environment points at a mediator that is not there:
+    # if a named profile ever took a setting from the environment, this would fail.
+    closed = "http://127.0.0.1:9"  # nothing listens on the discard port
+    s3 = boto3.client("s3", region_name="us-east-1", endpoint_url=s3_endpoint)
+    s3.create_bucket(Bucket="generic-bucket")
+    mac_home, far_home, mac, far = (tmp_path / d for d in ("mac-home", "far-home", "mac", "far"))
+    for d in (mac / ".", far / ".", mac_home / ".config/s3tx", far_home / ".config/tx"):
+        d.mkdir(parents=True)
+    cfg = mac_home / ".config/s3tx/config"
+    cfg.write_text(
+        "S3TX_BUCKET=not-this-one\n"
+        "[generic]\n"
+        "S3TX_AWS_PROFILE=\n"
+        "S3TX_BUCKET=generic-bucket\n"
+        f"S3TX_ENDPOINT_URL={s3_endpoint}\n"
+        f"S3TX_MEDIATOR={server.url}\n"
+        f"S3TX_ADMIN_TOKEN={harness.ADMIN_TOKEN}\n"
+    )
+    cfg.chmod(0o600)
+    tcfg = far_home / ".config/tx/config"
+    tcfg.write_text(
+        f"TX_MEDIATOR={closed}\nTX_CLIENT_ID=wrong\n"
+        f"[k8s]\nTX_MEDIATOR={server.url}\nTX_CLIENT_ID={harness.CLIENT_ID}\n"
+    )
+    tcfg.chmod(0o600)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_ENDPOINT_URL")}
+    env.update(HOME=str(mac_home), S3TX_MEDIATOR=closed, S3TX_ADMIN_TOKEN="env-token")
+
+    def s3tx(*args, check=True):
+        r = subprocess.run(
+            [sys.executable, str(harness.S3TX), *args],
+            cwd=mac,
+            env=env,
+            capture_output=True,
+            timeout=120,
+        )
+        if check:
+            assert r.returncode == 0, r.stderr.decode()
+        return r
+
+    try:
+        (mac / "f.bin").write_bytes(os.urandom(5000))
+        out = s3tx("--profile", "generic", "send", "f.bin", "--to", "laptop").stdout.decode()
+        code = _code(out, "get")
+        (entry,) = server.codes.values()
+        assert urlsplit(entry["url"]).path.startswith("/generic-bucket/")  # path-style
+        far_env = {"PATH": os.environ["PATH"], "HOME": str(far_home), "LC_ALL": "C"}
+        far_env["TX_MEDIATOR"] = closed
+        r = subprocess.run(
+            [SH, str(harness.TX), "--profile", "k8s", "get", code],
+            cwd=far,
+            env=far_env,
+            capture_output=True,
+            timeout=120,
+        )
+        assert r.returncode == 0, r.stderr.decode()
+        assert (far / "f.bin").read_bytes() == (mac / "f.bin").read_bytes()
+
+        status = s3tx("--profile", "generic", "status").stdout.decode()
+        assert "Config   : profile [generic]" in status
+        assert "Identity : not checked" in status and "Public access: not checked" in status
+        lock = s3tx("--profile", "generic", "lockdown", check=False)
+        assert lock.returncode == 1 and b"not AWS" in lock.stderr
+    finally:
+        for o in s3.list_objects_v2(Bucket="generic-bucket").get("Contents", []):
+            s3.delete_object(Bucket="generic-bucket", Key=o["Key"])
+        s3.delete_bucket(Bucket="generic-bucket")

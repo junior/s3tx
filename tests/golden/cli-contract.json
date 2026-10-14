@@ -1,8 +1,21 @@
 {
   "prog": "s3tx",
   "description": "Move files via a PRIVATE S3 bucket using time-limited pre-signed URLs.",
-  "epilog": "How the far end receives it (use with `send` or `link`):\n  --to CLIENT     short code via the mediator (recommended)    far end: tx get CODE\n  --code [CODE]   short code via the S3 manifest (fallback)    far end: tx get CODE\n  (neither)       a plain time-limited URL                     far end: tx get \"URL\"\n\nExamples:\n  s3tx send report.pdf --to laptop       upload + get a code\n  s3tx link report.pdf --to laptop       fresh code for a file already in the bucket\n  s3tx drop report.pdf --to laptop       receive a file (saved at key 'report.pdf')\n  s3tx ls                                list objects\n  s3tx codes                             list live codes\n  s3tx recv KEY                          download a file\n  s3tx rm KEY                            delete one object\n\nMany files, far end -> you:\n    (Mac)      s3tx drop bundle.tgz --to laptop\n    (far end)  tar czf - f1 dir/ | tx put - CODE\n    (Mac)      s3tx recv bundle.tgz             (then: tar xzf bundle.tgz)\n\nMany files, you -> far end:\n    (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to laptop\n    (far end)  tx get CODE                      (then: tar xzf bundle.tgz)\n",
+  "epilog": "How the far end receives it (use with `send` or `link`):\n  --to CLIENT     short code via the mediator (recommended)    far end: tx get CODE\n  --code [CODE]   short code via the S3 manifest (fallback)    far end: tx get CODE\n  (neither)       a plain time-limited URL                     far end: tx get \"URL\"\n\nExamples:\n  s3tx send report.pdf --to laptop       upload + get a code\n  s3tx link report.pdf --to laptop       fresh code for a file already in the bucket\n  s3tx drop report.pdf --to laptop       receive a file (saved at key 'report.pdf')\n  s3tx ls                                list objects\n  s3tx codes                             list live codes\n  s3tx recv KEY                          download a file\n  s3tx rm KEY                            delete one object\n  s3tx --profile NAME config             what the [NAME] profile sets\n\nMany files, far end -> you:\n    (Mac)      s3tx drop bundle.tgz --to laptop\n    (far end)  tar czf - f1 dir/ | tx put - CODE\n    (Mac)      s3tx recv bundle.tgz             (then: tar xzf bundle.tgz)\n\nMany files, you -> far end:\n    (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to laptop\n    (far end)  tx get CODE                      (then: tar xzf bundle.tgz)\n",
   "options": [
+    {
+      "flags": [
+        "--profile"
+      ],
+      "dest": "profile",
+      "nargs": null,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "type": null,
+      "required": false,
+      "metavar": "NAME",
+      "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+    },
     {
       "flags": [
         "--version"
@@ -22,6 +35,19 @@
       "name": "send",
       "help": "upload a file, print a download link for the far end",
       "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        },
         {
           "flags": [],
           "dest": "file",
@@ -90,6 +116,19 @@
       "help": "make a fresh code/link for an object already in the bucket",
       "args": [
         {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        },
+        {
           "flags": [],
           "dest": "key",
           "nargs": null,
@@ -146,6 +185,19 @@
       "help": "print an UPLOAD link so the far end can push a file (no creds)",
       "args": [
         {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        },
+        {
           "flags": [],
           "dest": "key",
           "nargs": null,
@@ -189,6 +241,19 @@
       "help": "download an object to this machine",
       "args": [
         {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        },
+        {
           "flags": [],
           "dest": "key",
           "nargs": null,
@@ -217,6 +282,19 @@
       "help": "list objects in the bucket",
       "args": [
         {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        },
+        {
           "flags": [],
           "dest": "prefix",
           "nargs": "?",
@@ -234,6 +312,19 @@
       "help": "delete one object",
       "args": [
         {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        },
+        {
           "flags": [],
           "dest": "key",
           "nargs": null,
@@ -249,22 +340,77 @@
     {
       "name": "rmrf",
       "help": "delete EVERY object in the bucket (asks for confirmation)",
-      "args": []
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        }
+      ]
     },
     {
       "name": "status",
       "help": "show identity, bucket, and confirm the bucket is private",
-      "args": []
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        }
+      ]
     },
     {
       "name": "lockdown",
       "help": "force Block-Public-Access ON and remove any bucket policy",
-      "args": []
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        }
+      ]
     },
     {
       "name": "manifest-url",
       "help": "print a long-lived seed URL to the manifest (for TX_MANIFEST)",
       "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        },
         {
           "flags": [
             "--days"
@@ -283,12 +429,59 @@
     {
       "name": "codes",
       "help": "list live manifest codes",
-      "args": []
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        }
+      ]
+    },
+    {
+      "name": "config",
+      "help": "show the settings in effect and where they come from",
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        }
+      ]
     },
     {
       "name": "help",
       "help": "show this help",
-      "args": []
+      "args": [
+        {
+          "flags": [
+            "--profile"
+          ],
+          "dest": "profile",
+          "nargs": null,
+          "const": null,
+          "default": "==SUPPRESS==",
+          "type": null,
+          "required": false,
+          "metavar": "NAME",
+          "help": "use the [NAME] section of ~/.config/s3tx/config (default: [default])"
+        }
+      ]
     }
   ]
 }

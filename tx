@@ -3,17 +3,21 @@
 #
 # A URL (e.g. a pre-signed S3 URL) carries its own auth. A short code is resolved
 # to a URL via one of two backends, configured once on this box:
-#   TX_MEDIATOR + TX_CLIENT_ID : authenticated mediator (Vercel). The code is scoped
-#                                to this client and single-use; TX_CLIENT_ID is sent
-#                                as a header, never in a URL, and never typed.
+#   TX_MEDIATOR + TX_CLIENT_ID : an authenticated mediator. The code is scoped to this
+#                                client and single-use; TX_CLIENT_ID is sent as a
+#                                header, never in a URL, and never typed.
 #   TX_MANIFEST (or ~/.config/tx/manifest.url) : a pre-signed S3 manifest, no 3rd party.
-# Set these ONCE in ~/.config/tx/config (auto-sourced below; chmod 600, since TX_CLIENT_ID is
-# a secret) so you needn't export them in every shell.
+# Set these ONCE in ~/.config/tx/config (chmod 600, since TX_CLIENT_ID is a secret) so
+# you needn't export them in every shell. The file holds KEY=VALUE lines and may hold
+# named profiles in [name] sections; lines before any section are [default]. It is read,
+# never executed. The default profile lets the environment override the file; a profile
+# chosen with --profile NAME uses its own [NAME] lines and nothing else.
 # Portable to anything with a POSIX shell + curl: Linux, WSL, Raspberry Pi, ...
 #
 # Usage:
-#   tx get <url|code> [outfile]   download
-#   tx put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
+#   tx [--profile NAME] get <url|code> [outfile]   download
+#   tx [--profile NAME] put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
+#   tx [--profile NAME] config                     show the settings in use
 #   tx help
 
 set -eu
@@ -27,7 +31,11 @@ usage() {
 Usage:
   $prog get <url|code> [outfile]   download (code via TX_MEDIATOR or TX_MANIFEST)
   $prog put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
+  $prog config                     show the settings in use, secrets masked
   $prog help
+
+Options, before the command:
+  --profile NAME   use the [NAME] section of ~/.config/tx/config (default: [default])
 
 A value starting with http(s):// is used as-is; otherwise it is a short code,
 resolved via \$TX_MEDIATOR (+ \$TX_CLIENT_ID) or \$TX_MANIFEST.
@@ -36,17 +44,129 @@ EOF
 
 command -v curl >/dev/null 2>&1 || die "curl is required but was not found"
 
-# Load machine-local config so TX_MEDIATOR / TX_CLIENT_ID (and/or TX_MANIFEST) can be set
-# once in a file instead of exported in every shell. Skipped when already set in the
-# environment, so a one-off `TX_CLIENT_ID=... tx ...` still wins.
-if [ -z "${TX_MEDIATOR:-}${TX_CLIENT_ID:-}" ] && [ -r "$HOME/.config/tx/config" ]; then
-  . "$HOME/.config/tx/config"
-fi
+profile=default
+while [ $# -gt 0 ]; do
+  case $1 in
+    --profile) [ $# -ge 2 ] || die "--profile needs a profile name"; profile=$2; shift 2 ;;
+    --profile=*) profile=${1#--profile=}; shift ;;
+    *) break ;;
+  esac
+done
+case $profile in
+  '' | *[!A-Za-z0-9_.-]*) die "a profile name is letters, digits, dot, underscore or hyphen" ;;
+esac
+
+cfg_file="$HOME/.config/tx/config"
+tab=$(printf '\t')
+
+# The config grammar, the same as s3tx's (the tests hold both to one set of fixtures):
+# KEY=VALUE lines, # comments, optional quotes and `export`, [name] section headers.
+# Prints the wanted section's settings as K<TAB>KEY<TAB>VALUE and S<TAB>1 when that
+# section exists; for a malformed line, E<TAB>line<TAB>reason and exit status 2.
+read_config_awk='
+function fail(msg) { printf "E\t%d\t%s\n", NR, msg; bad = 1; exit 2 }
+BEGIN { section = "default" }
+{
+  line = $0
+  sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+  if (line == "" || substr(line, 1, 1) == "#") next
+  if (substr(line, 1, 1) == "[") {
+    if (line !~ /^\[[ \t]*[A-Za-z0-9_.-]+[ \t]*\][ \t]*(#.*)?$/)
+      fail("a section header is [name], with letters, digits, dot, underscore or hyphen")
+    section = line
+    sub(/^\[[ \t]*/, "", section); sub(/[ \t]*\].*$/, "", section)
+    if (section == want) found = 1
+    next
+  }
+  rest = line
+  if (rest ~ /^export[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*=/) sub(/^export[ \t]+/, "", rest)
+  if (!match(rest, /^[A-Za-z_][A-Za-z0-9_]*[ \t]*=/)) fail("expected KEY=VALUE or a [section] header")
+  key = substr(rest, 1, RLENGTH - 1); sub(/[ \t]+$/, "", key)
+  rest = substr(rest, RLENGTH + 1); sub(/^[ \t]+/, "", rest)
+  q = substr(rest, 1, 1)
+  if (q == "\"" || q == "\047") {
+    rest = substr(rest, 2); e = index(rest, q)
+    if (e == 0) fail("the quoted value never ends")
+    value = substr(rest, 1, e - 1); tail = substr(rest, e + 1)
+  } else if (q == "#") {
+    value = ""; tail = ""
+  } else if (match(rest, /[ \t]/)) {
+    value = substr(rest, 1, RSTART - 1); tail = substr(rest, RSTART)
+  } else {
+    value = rest; tail = ""
+  }
+  sub(/^[ \t]+/, "", tail)
+  if (tail != "" && substr(tail, 1, 1) != "#") fail("a value with spaces needs quotes")
+  if (section == want) { vals[key] = value; keys[key] = 1 }
+}
+END {
+  if (bad) exit 2
+  if (want == "default") found = 1
+  for (k in keys) printf "K\t%s\t%s\n", k, vals[k]
+  printf "S\t%d\n", found
+}'
+
+# Load the profile's settings from the config file, then settle each one: for the
+# default profile the environment wins, a named profile takes only its own lines.
+load_config() {
+  cfg_found=0 cfg_mediator='' cfg_client='' cfg_manifest=''
+  has_mediator='' has_client='' has_manifest=''
+  src_TX_MEDIATOR=unset src_TX_CLIENT_ID=unset src_TX_MANIFEST=unset
+  if [ -r "$cfg_file" ]; then
+    case $(ls -ld "$cfg_file" 2>/dev/null) in
+      -???------*) ;;
+      *) printf '%s: %s is readable by other users, and it holds TX_CLIENT_ID: chmod 600 it\n' \
+           "$prog" "$cfg_file" >&2 ;;
+    esac
+    parsed=$(awk -v want="$profile" "$read_config_awk" "$cfg_file") || {
+      why=$(printf '%s\n' "$parsed" | awk -F"$tab" '$1 == "E" { print "line " $2 ": " $3; exit }')
+      die "$cfg_file, ${why:-cannot be read}"
+    }
+    while IFS=$tab read -r tag k v; do
+      case $tag in
+        S) cfg_found=$k ;;
+        K) case $k in
+             TX_MEDIATOR) cfg_mediator=$v has_mediator=1 ;;
+             TX_CLIENT_ID) cfg_client=$v has_client=1 ;;
+             TX_MANIFEST) cfg_manifest=$v has_manifest=1 ;;
+           esac ;;
+      esac
+    done <<EOF
+$parsed
+EOF
+  fi
+  if [ "$profile" != default ] && [ "$cfg_found" != 1 ]; then
+    [ -r "$cfg_file" ] || die "there is no profile [$profile] because $cfg_file does not exist"
+    die "there is no profile [$profile] in $cfg_file"
+  fi
+  settle TX_MEDIATOR "$has_mediator" "$cfg_mediator"
+  settle TX_CLIENT_ID "$has_client" "$cfg_client"
+  settle TX_MANIFEST "$has_manifest" "$cfg_manifest"
+}
+
+# settle VAR HAS VALUE: VAR's environment value (default profile only), else the file's
+# VALUE when HAS is set, else empty; src_VAR records which (env, file or unset).
+settle() {
+  eval "_env=\${$1:-}"
+  if [ "$profile" = default ] && [ -n "$_env" ]; then
+    eval "src_$1=env"
+  elif [ -n "$2" ]; then
+    eval "$1=\$3 src_$1=file"
+  else
+    eval "$1= src_$1=unset"
+  fi
+}
+
+# secret_line KEY VALUE SOURCE: a setting for `tx config`, a secret shown by its length only
+secret_line() {
+  if [ -n "$2" ]; then printf '%s=<set, %s characters>  [%s]\n' "$1" "${#2}" "$3"
+  else printf '%s=  [%s]\n' "$1" "$3"; fi
+}
 
 manifest_seed() {
   if [ -n "${TX_MANIFEST:-}" ]; then
     printf '%s' "$TX_MANIFEST"
-  elif [ -r "$HOME/.config/tx/manifest.url" ]; then
+  elif [ "$profile" = default ] && [ -r "$HOME/.config/tx/manifest.url" ]; then
     cat "$HOME/.config/tx/manifest.url"
   fi
 }
@@ -77,8 +197,18 @@ resolve() {
 }
 
 cmd=${1:-help}
+case "$cmd" in
+  get | put | config) load_config ;;
+esac
 
 case "$cmd" in
+  config)
+    found=; [ -r "$cfg_file" ] || found=", which does not exist"
+    printf 'Profile [%s] from %s%s\n' "$profile" "$cfg_file" "$found"
+    printf 'TX_MEDIATOR=%s  [%s]\n' "$TX_MEDIATOR" "$src_TX_MEDIATOR"
+    secret_line TX_CLIENT_ID "$TX_CLIENT_ID" "$src_TX_CLIENT_ID"
+    secret_line TX_MANIFEST "$TX_MANIFEST" "$src_TX_MANIFEST"
+    ;;
   get)
     [ $# -ge 2 ] || die "usage: $prog get <url|code> [outfile]"
     url=$(resolve "$2")

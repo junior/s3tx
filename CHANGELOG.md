@@ -8,6 +8,35 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-14
+
+### Added
+
+- Profiles. `~/.config/s3tx/config` and `~/.config/tx/config` can hold named profiles in
+  `[name]` sections, chosen with `--profile NAME` on either tool; the lines before any
+  section are the default profile, so existing files keep working. A named profile uses
+  only its own section, never the environment or `[default]`; the environment overrides
+  the default profile only.
+- `s3tx config` and `tx config` show the settings in use and where each one comes from,
+  with secrets masked.
+- S3-compatible servers: `S3TX_ENDPOINT_URL` and `S3TX_CA_BUNDLE`. With a server other
+  than AWS, s3tx uses path-style addresses, sends checksums only where the S3 API requires
+  one, and skips the AWS-only identity and Block Public Access checks; `lockdown` refuses.
+- `S3TX_AWS_PROFILE` names the AWS credentials profile; `S3TX_PROFILE` still works.
+- Both tools warn when their config file is readable by other users.
+
+### Changed
+
+- tx reads `~/.config/tx/config` instead of running it as shell code. `KEY=VALUE` lines,
+  comments and quotes work as before; shell commands or variable references there no
+  longer do.
+
+### Fixed
+
+- tx no longer ignores its config file when the environment sets only one of
+  `TX_MEDIATOR` and `TX_CLIENT_ID`: whatever the environment leaves out comes from the
+  file.
+
 ## [1.2.0] - 2026-10-13
 
 ### Changed
@@ -75,7 +104,8 @@ between tx and the mediator.
   policy.
 - `send -` reads stdin.
 
-[Unreleased]: https://github.com/junior/s3tx/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/junior/s3tx/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/junior/s3tx/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/junior/s3tx/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/junior/s3tx/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/junior/s3tx/releases/tag/v1.0.0
