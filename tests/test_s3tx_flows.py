@@ -464,3 +464,10 @@ def test_help_without_credentials(cli, argv):
 def test_an_unknown_command_is_a_usage_error(cli):
     code, _, err = cli("frobnicate")
     assert code == 2 and "invalid choice" in err
+
+
+def test_version_needs_no_credentials(s3tx, cli):
+    code, out, _ = cli("--version")
+    assert code == 0
+    assert out == f"s3tx {s3tx.__version__}\n"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", s3tx.__version__)

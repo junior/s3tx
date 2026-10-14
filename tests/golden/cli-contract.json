@@ -2,6 +2,21 @@
   "prog": "s3tx",
   "description": "Move files via a PRIVATE S3 bucket using time-limited pre-signed URLs.",
   "epilog": "How the far end receives it (use with `send` or `link`):\n  --to CLIENT     short code via the mediator (recommended)    far end: tx get CODE\n  --code [CODE]   short code via the S3 manifest (fallback)    far end: tx get CODE\n  (neither)       a plain time-limited URL                     far end: tx get \"URL\"\n\nExamples:\n  s3tx send report.pdf --to laptop       upload + get a code\n  s3tx link report.pdf --to laptop       fresh code for a file already in the bucket\n  s3tx drop report.pdf --to laptop       receive a file (saved at key 'report.pdf')\n  s3tx ls                                list objects\n  s3tx codes                             list live codes\n  s3tx recv KEY                          download a file\n  s3tx rm KEY                            delete one object\n\nMany files, far end \u2192 you:   \n    (Mac)      s3tx drop bundle.tgz --to laptop\n    (far end)  tar czf - f1 dir/ | tx put - CODE\n    (Mac)      s3tx recv bundle.tgz             (then: tar xzf bundle.tgz)\n\nMany files, you \u2192 far end:\n    (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to laptop\n    (far end)  tx get CODE                      (then: tar xzf bundle.tgz)\n",
+  "options": [
+    {
+      "flags": [
+        "--version"
+      ],
+      "dest": "version",
+      "nargs": 0,
+      "const": null,
+      "default": "==SUPPRESS==",
+      "type": null,
+      "required": false,
+      "metavar": null,
+      "help": "show program's version number and exit"
+    }
+  ],
   "commands": [
     {
       "name": "send",

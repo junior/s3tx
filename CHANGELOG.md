@@ -18,6 +18,7 @@ between tx and the mediator.
   when that is set.
 - Tests for every s3tx command, for tx under `sh` and `dash`, for full round trips and
   for the mediator handlers, all against local stand-ins: no AWS needed.
+- `s3tx --version`, which needs no credentials or dependencies.
 
 ### Changed
 

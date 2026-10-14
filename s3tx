@@ -45,6 +45,8 @@ import secrets
 import sys
 import time
 
+__version__ = "1.1.0"
+
 
 def _int_env(name, default):
     """int() an env var, falling back (with a warning) if it isn't numeric."""
@@ -470,6 +472,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=EPILOG,
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     def add(name, fn, help_):

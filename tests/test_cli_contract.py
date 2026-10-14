@@ -34,31 +34,37 @@ def _capture_parser(mod, monkeypatch):
     raise AssertionError("s3tx main() never parsed its arguments")
 
 
+def _args(actions):
+    # The version string itself is left out, so a release does not rewrite the contract.
+    return [
+        {
+            "flags": a.option_strings,
+            "dest": a.dest,
+            "nargs": a.nargs,
+            "const": a.const,
+            "default": a.default,
+            "type": getattr(a.type, "__name__", None),
+            "required": a.required,
+            "metavar": a.metavar,
+            "help": a.help,
+        }
+        for a in actions
+        if not isinstance(a, (argparse._HelpAction, argparse._SubParsersAction))
+    ]
+
+
 def _describe(parser):
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     helps = {a.dest: a.help for a in sub._choices_actions}
-    commands = []
-    for name, sp in sub.choices.items():
-        args = [
-            {
-                "flags": a.option_strings,
-                "dest": a.dest,
-                "nargs": a.nargs,
-                "const": a.const,
-                "default": a.default,
-                "type": getattr(a.type, "__name__", None),
-                "required": a.required,
-                "metavar": a.metavar,
-                "help": a.help,
-            }
-            for a in sp._actions
-            if not isinstance(a, argparse._HelpAction)
-        ]
-        commands.append({"name": name, "help": helps.get(name), "args": args})
+    commands = [
+        {"name": name, "help": helps.get(name), "args": _args(sp._actions)}
+        for name, sp in sub.choices.items()
+    ]
     return {
         "prog": parser.prog,
         "description": parser.description,
         "epilog": parser.epilog,
+        "options": _args(parser._actions),
         "commands": commands,
     }
 
