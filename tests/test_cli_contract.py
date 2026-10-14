@@ -10,6 +10,7 @@ and review the diff of tests/golden/cli-contract.json like any other change.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 import harness
@@ -99,3 +100,9 @@ def test_defaults_without_any_environment(monkeypatch):
     mod = harness.load_s3tx()
     assert (mod.PROFILE, mod.BUCKET, mod.REGION, mod.EXPIRES) == ("s3tx", "s3tx", "us-east-1", 600)
     assert (mod.MANIFEST_KEY, mod.MAX_EXPIRES) == (".s3tx-manifest", 604800)
+
+
+def test_the_version_is_the_newest_release_in_the_changelog(s3tx):
+    changelog = (harness.REPO / "CHANGELOG.md").read_text()
+    newest = re.search(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.MULTILINE).group(1)
+    assert s3tx.__version__ == newest
