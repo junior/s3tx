@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# tx — transfer a file to/from a URL or a short code, using only curl.
+# tx: transfer a file to/from a URL or a short code, using only curl.
 #
 # A URL (e.g. a pre-signed S3 URL) carries its own auth. A short code is resolved
 # to a URL via one of two backends, configured once on this box:
@@ -7,9 +7,9 @@
 #                                to this client and single-use; TX_CLIENT_ID is sent
 #                                as a header, never in a URL, and never typed.
 #   TX_MANIFEST (or ~/.config/tx/manifest.url) : a pre-signed S3 manifest, no 3rd party.
-# Set these ONCE in ~/.config/tx/config (auto-sourced below; chmod 600 — TX_CLIENT_ID is
+# Set these ONCE in ~/.config/tx/config (auto-sourced below; chmod 600, since TX_CLIENT_ID is
 # a secret) so you needn't export them in every shell.
-# Portable to anything with a POSIX shell + curl: Linux, WSL, Raspberry Pi, …
+# Portable to anything with a POSIX shell + curl: Linux, WSL, Raspberry Pi, ...
 #
 # Usage:
 #   tx get <url|code> [outfile]   download
@@ -38,7 +38,7 @@ command -v curl >/dev/null 2>&1 || die "curl is required but was not found"
 
 # Load machine-local config so TX_MEDIATOR / TX_CLIENT_ID (and/or TX_MANIFEST) can be set
 # once in a file instead of exported in every shell. Skipped when already set in the
-# environment, so a one-off `TX_CLIENT_ID=… tx …` still wins.
+# environment, so a one-off `TX_CLIENT_ID=... tx ...` still wins.
 if [ -z "${TX_MEDIATOR:-}${TX_CLIENT_ID:-}" ] && [ -r "$HOME/.config/tx/config" ]; then
   . "$HOME/.config/tx/config"
 fi
@@ -58,14 +58,14 @@ resolve() {
   esac
   if [ -n "${TX_MEDIATOR:-}" ]; then
     [ -n "${TX_CLIENT_ID:-}" ] || die "TX_MEDIATOR is set but TX_CLIENT_ID is not"
-    # Strip stray whitespace/CR — a config saved with Windows CRLF endings leaves a
+    # Strip stray whitespace/CR: a config saved with Windows CRLF endings leaves a
     # trailing \r on the value, which silently corrupts the header/URL -> 403.
     _med=$(printf %s "${TX_MEDIATOR%/}" | tr -d '[:space:]')
     _cid=$(printf %s "$TX_CLIENT_ID" | tr -d '[:space:]')
     t=$(mktemp 2>/dev/null) || t="./.tx.$$.r"
     c=$(curl -sS --connect-timeout 10 --max-time 25 -o "$t" -w '%{http_code}' \
         -H "X-Client-Id: $_cid" "$_med/api/get/$1") \
-        || { rm -f "$t"; die "mediator unreachable (timed out — is $_med blocked here?)"; }
+        || { rm -f "$t"; die "mediator unreachable (timed out: is $_med blocked here?)"; }
     if [ "$c" != 200 ]; then m=$(cat "$t"); rm -f "$t"; die "mediator refused: $m (HTTP $c)"; fi
     u=$(cat "$t"); rm -f "$t"; printf '%s' "$u"; return
   fi
@@ -86,7 +86,7 @@ case "$cmd" in
     tmp=$(mktemp 2>/dev/null) || tmp="./.tx.$$.tmp"
     printf 'Downloading ...\n' >&2
     eff=$(curl -fSL --connect-timeout 15 --progress-bar -o "$tmp" -w '%{url_effective}' "$url") \
-      || { rm -f "$tmp"; die "download failed — link expired/wrong/revoked, or host blocked here"; }
+      || { rm -f "$tmp"; die "download failed: link expired/wrong/revoked, or host blocked here"; }
     if [ -z "$out" ]; then
       out=${eff%%\?*}
       out=${out##*/}
@@ -113,7 +113,7 @@ case "$cmd" in
     printf 'Uploading %s ...\n' "$label" >&2
     if ! curl -fSL --connect-timeout 15 --progress-bar -X PUT --upload-file "$file" "$url"; then
       [ -z "$tmp" ] || rm -f "$tmp"
-      die "upload failed — link expired/wrong/not-a-PUT-URL, or host blocked here"
+      die "upload failed: link expired/wrong/not-a-PUT-URL, or host blocked here"
     fi
     [ -z "$tmp" ] || rm -f "$tmp"
     printf 'Uploaded %s\n' "$label" >&2

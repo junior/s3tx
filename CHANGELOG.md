@@ -16,6 +16,7 @@ between tx and the mediator.
   configured.
 - s3tx needs Python 3.10 or later, as current boto3 does. uv fetches a suitable Python
   by itself when the machine has none.
+- tx's messages and comments use plain ASCII punctuation; what it does is unchanged.
 
 ## [1.1.0] - 2026-10-13
 
