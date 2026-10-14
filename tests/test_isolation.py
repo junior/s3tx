@@ -13,6 +13,9 @@ def test_only_fake_credentials_and_no_user_config_reach_the_tests():
     assert [k for k in os.environ if k.startswith("S3TX_")] == ["S3TX_PROFILE"]
     assert os.environ["S3TX_PROFILE"] == ""
     assert not any(k.startswith("TX_") for k in os.environ)
+    home = Path(os.environ["HOME"])
+    assert home == Path.home() and "s3tx-tests-" in str(home)
+    assert not (home / ".config").exists()
 
 
 def test_s3tx_resolves_the_fake_credentials(s3tx):

@@ -120,7 +120,25 @@ chmod 600 ~/.config/tx/config
 
 Prefer the manifest backend (`s3tx ... --code`, no third party)? Run `s3tx manifest-url` on
 the Mac: it prints the exact commands to set `TX_MANIFEST` or write
-`~/.config/tx/manifest.url`. Environment variables always override the config file.
+`~/.config/tx/manifest.url`.
+
+**Profiles.** The file can also hold named profiles, each in a `[name]` section. The lines
+before any section are the `[default]` profile, so a file without sections, like the one
+above, keeps working as it is. `tx --profile k8s get <code>` uses the `[k8s]` section and
+nothing else:
+
+```ini
+TX_MEDIATOR=https://your-mediator.vercel.app
+TX_CLIENT_ID=your-machines-client-id
+
+[k8s]
+TX_MEDIATOR=https://tx.internal.example
+TX_CLIENT_ID=this-machines-client-id-there
+```
+
+Environment variables override the default profile; a profile chosen with `--profile`
+ignores them. The file is read, never run as shell code. `tx config` shows the settings in
+use and where each one comes from, with secrets masked.
 
 **Use it:**
 
@@ -149,6 +167,8 @@ code and resolved via the mediator or the manifest.
 | `lockdown` | force Block-Public-Access on, remove any bucket policy |
 | `manifest-url` | print a long-lived seed URL for `--code` (max 7 days) |
 | `codes` | list live manifest codes |
+| `config` | show the settings in use and where each comes from (secrets masked) |
+| `--profile NAME` | before or after any command: use the `[NAME]` profile |
 | `--version` | print the version and exit |
 
 ### Many files
@@ -168,25 +188,60 @@ s3tx recv bundle.tgz               # then: tar xzf bundle.tgz
 
 ## Configuration
 
-All via environment variables:
+Settings come from environment variables or from `~/.config/s3tx/config` (chmod 600: it
+can hold the admin token, and s3tx warns when others can read it). The file holds
+`KEY=VALUE` lines named like the variables below, `#` comments, and optional named
+profiles in `[name]` sections; the lines before any section are the `[default]` profile.
+It is read, never executed, and `tx` uses the same format for its own file.
+
+- **The default profile:** the environment overrides the file, setting by setting.
+- **`s3tx --profile NAME ...`:** only the `[NAME]` section counts, never the environment
+  and never `[default]`; whatever the section leaves out takes the built-in default. One
+  profile's mediator or token can therefore never leak into another's.
+- **`s3tx config`** shows the settings in effect and where each one comes from.
+
+```ini
+# the default profile: AWS, and a mediator on Vercel
+S3TX_MEDIATOR=https://your-mediator.vercel.app
+S3TX_ADMIN_TOKEN=your-admin-token
+
+[k8s]   # an S3-compatible server, and a mediator of its own
+S3TX_AWS_PROFILE=internal-s3      # that server's keys, in ~/.aws/credentials
+S3TX_BUCKET=transfers
+S3TX_ENDPOINT_URL=https://s3.internal.example:9021
+S3TX_CA_BUNDLE=/etc/ssl/certs/internal-ca.pem
+S3TX_MEDIATOR=https://tx.internal.example
+S3TX_ADMIN_TOKEN=that-mediators-admin-token
+```
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `S3TX_PROFILE` | `s3tx` | dedicated AWS profile; set empty to use the standard boto3 chain |
+| `S3TX_AWS_PROFILE` | `s3tx` | AWS credentials profile; empty uses the standard boto3 chain (`S3TX_PROFILE` is its older name) |
 | `S3TX_BUCKET` | `s3tx` | bucket name |
 | `S3TX_REGION` | `us-east-1` | bucket region; on AWS the bucket's own region is detected and used |
+| `S3TX_ENDPOINT_URL` | (AWS) | an S3-compatible server to use instead of AWS |
+| `S3TX_CA_BUNDLE` | (system) | CA bundle that verifies that server's certificate |
 | `S3TX_EXPIRES` | `600` | link lifetime in seconds (clamped to the 7-day SigV4 max) |
 | `S3TX_MANIFEST_KEY` | `.s3tx-manifest` | key of the private manifest object (for `--code`) |
 | `S3TX_MEDIATOR` | (none) | mediator base URL (for `--to`) |
 | `S3TX_ADMIN_TOKEN` | (none) | mediator admin bearer token (for `--to`) |
+
+### S3-compatible servers
+
+With `S3TX_ENDPOINT_URL` pointing at a server other than AWS, s3tx uses path-style
+addresses and sends checksums only where the S3 API requires one, which suits
+S3-compatible servers. It skips what only AWS has: the identity check before each command
+and the Block Public Access check in `status`, and `lockdown` refuses. Keep such a bucket
+private with the server's own controls. A mediator accepts only `https` URLs on AWS by
+default; for another server, set the mediator's `ALLOWED_URL_HOST` to its host name.
 
 ## Security model
 
 - A pre-signed URL is a **bearer token**: whoever holds it has the access it encodes until
   it expires. `s3tx` prints the expiry and treats URLs as secrets: keep them out of shared
   logs and chat history.
-- The bucket stays private; `s3tx status` checks Block-Public-Access and `s3tx lockdown`
-  enforces it.
+- The bucket stays private; on AWS, `s3tx status` checks Block-Public-Access and
+  `s3tx lockdown` enforces it.
 - Credentials never leave the trusted machine, and the IAM user is scoped to one bucket.
 - **Mediator codes** (`--to`) are single-use, scoped to one client, and rate-limited.
 - **Manifest codes** (`--code`) are simpler but weaker: the *seed URL* from

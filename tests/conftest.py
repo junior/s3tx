@@ -15,6 +15,7 @@ import pytest
 
 _SANDBOX = Path(tempfile.mkdtemp(prefix="s3tx-tests-"))
 atexit.register(shutil.rmtree, _SANDBOX, ignore_errors=True)
+(_SANDBOX / "home").mkdir()
 for _key in list(os.environ):
     if _key.startswith(("AWS_", "S3TX_", "TX_")):
         del os.environ[_key]
@@ -28,6 +29,7 @@ os.environ.update(
         "AWS_SHARED_CREDENTIALS_FILE": str(_SANDBOX / "absent-aws-credentials"),
         "AWS_EC2_METADATA_DISABLED": "true",
         "S3TX_PROFILE": "",  # the fake credentials above, never a named profile
+        "HOME": str(_SANDBOX / "home"),  # never the user's ~/.config/s3tx or ~/.config/tx
         "NO_COLOR": "1",
     }
 )

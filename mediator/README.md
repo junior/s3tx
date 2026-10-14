@@ -26,7 +26,8 @@ Security properties:
 - **Lockout**: after `MAX_ATTEMPTS` (default 20) failures per client in a 10-min
   window -> HTTP 429, so the 8-char code space can't be brute-forced.
 - **URL allow-list**: register rejects any URL that isn't an `https://...amazonaws.com`
-  host. Set `ALLOWED_URL_HOST` to pin the exact bucket host.
+  host. Set `ALLOWED_URL_HOST` to pin the exact bucket host, or to the host of an
+  S3-compatible server when s3tx uses one (`S3TX_ENDPOINT_URL`).
 
 ## One-time setup
 

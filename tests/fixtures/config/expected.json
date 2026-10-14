@@ -1,0 +1,80 @@
+{
+  "bad-header.conf": {
+    "error_line": 1
+  },
+  "bad-key.conf": {
+    "error_line": 1
+  },
+  "bad-line.conf": {
+    "error_line": 2
+  },
+  "duplicates.conf": {
+    "default": {
+      "TX_MEDIATOR": "https://second.example"
+    }
+  },
+  "empty-value.conf": {
+    "default": {
+      "TX_CLIENT_ID": "",
+      "TX_MANIFEST": "",
+      "TX_MEDIATOR": "https://a.example"
+    }
+  },
+  "enrolled-crlf.conf": {
+    "default": {
+      "TX_CLIENT_ID": "0123456789abcdef0123456789abcdef",
+      "TX_MEDIATOR": "https://mediator.example.org"
+    }
+  },
+  "enrolled.conf": {
+    "default": {
+      "TX_CLIENT_ID": "0123456789abcdef0123456789abcdef",
+      "TX_MEDIATOR": "https://mediator.example.org"
+    }
+  },
+  "explicit-default.conf": {
+    "default": {
+      "TX_CLIENT_ID": "late-id",
+      "TX_MEDIATOR": "https://a.example"
+    },
+    "other": {
+      "TX_MEDIATOR": "https://b.example"
+    }
+  },
+  "hash-in-value.conf": {
+    "default": {
+      "TX_MEDIATOR": "https://a.example/#frag"
+    }
+  },
+  "readme-example.conf": {
+    "default": {
+      "TX_CLIENT_ID": "your-machines-client-id",
+      "TX_MEDIATOR": "https://your-mediator.example.org"
+    }
+  },
+  "sections.conf": {
+    "default": {
+      "TX_CLIENT_ID": "default-client-id",
+      "TX_MEDIATOR": "https://mediator.example.org"
+    },
+    "empty": {},
+    "k8s": {
+      "TX_CLIENT_ID": "quoted id",
+      "TX_MANIFEST": "https://bucket.example/.s3tx-manifest?sig=a#b",
+      "TX_MEDIATOR": "https://tx.internal.example"
+    }
+  },
+  "unknown-keys.conf": {
+    "default": {
+      "S3TX_BUCKET": "bucket-x",
+      "SOMETHING_ELSE": "whatever",
+      "TX_MEDIATOR": "https://a.example"
+    }
+  },
+  "unquoted-space.conf": {
+    "error_line": 2
+  },
+  "unterminated-quote.conf": {
+    "error_line": 1
+  }
+}
