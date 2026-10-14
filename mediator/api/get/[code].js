@@ -1,8 +1,8 @@
-// GET /api/get/<code>  — called by tx (the far end) to redeem a code for its URL.
+// GET /api/get/<code>: called by tx (the far end) to redeem a code for its URL.
 // Auth: header "X-Client-Id: <clientID>" (the per-machine secret; never in the URL).
 //
-// Checks, in order: known client (hash in allow-list) → per-client rate-limit →
-// code exists/unexpired → code is scoped to THIS client → single-use (deleted on
+// Checks, in order: known client (hash in allow-list) -> per-client rate-limit ->
+// code exists/unexpired -> code is scoped to THIS client -> single-use (deleted on
 // success). Returns the pre-signed URL as text/plain so tx needs no JSON parser.
 import { Redis } from "@upstash/redis";
 import { createHash } from "node:crypto";
@@ -45,7 +45,7 @@ export default async function handler(req, res) {
 
   // Per-client lockout: count attempts in a rolling window; successes are refunded.
   // Create the counter together with its TTL (NX) so an interrupted request can never
-  // leave a counter without an expiry — which would lock the client out permanently.
+  // leave a counter without an expiry, which would lock the client out permanently.
   const rlKey = `rl:${name}`;
   await redis.set(rlKey, 0, { nx: true, ex: WINDOW });
   const attempts = await redis.incr(rlKey);

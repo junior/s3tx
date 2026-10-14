@@ -1,4 +1,4 @@
-// POST /api/register  — called by s3tx (the Mac) to stash a pre-signed URL behind
+// POST /api/register: called by s3tx (the Mac) to stash a pre-signed URL behind
 // a short, scoped, single-use code. Guarded by the ADMIN_TOKEN bearer secret.
 //
 // Body (JSON): { code, url, client, method?, ttl? }
@@ -67,7 +67,7 @@ export default async function handler(req, res) {
   if (!["GET", "PUT"].includes(method)) return res.status(400).json({ error: "bad method" });
   const ttlSec = Math.min(Math.max(parseInt(ttl, 10) || 600, 30), 900);
 
-  // nx: refuse to clobber an existing live code (collision → s3tx regenerates).
+  // nx: refuse to clobber an existing live code (collision: s3tx regenerates).
   const ok = await redis.set(`code:${code}`, JSON.stringify({ url, client, method }), {
     nx: true,
     ex: ttlSec,

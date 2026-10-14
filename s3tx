@@ -4,12 +4,12 @@
 # dependencies = ["boto3"]
 # ///
 """
-s3tx — move files in and out of a locked-down environment through a PRIVATE S3
+s3tx: move files in and out of a locked-down environment through a PRIVATE S3
 bucket, using time-limited pre-signed URLs.
 
 Design goals (vs. the old public-bucket version):
   * The bucket is NEVER made public. Block Public Access stays fully ON. Access
-    is granted per-object, time-boxed, via a signed URL — not via bucket policy.
+    is granted per-object, time-boxed, via a signed URL, not via bucket policy.
   * The far end (corp laptop, a phone, a friend's place) needs NOTHING but curl
     or a web browser. No AWS CLI, no credentials there.
   * The authenticated side (this machine) needs AWS credentials + Python. boto3
@@ -27,11 +27,11 @@ Two workflows
       s3tx drop inbox/file.zip        # prints an upload (PUT) link + curl
       s3tx recv inbox/file.zip        # pull it here once they've uploaded
 
-Short codes — two ways for the far end to use a tiny code instead of a giant URL:
+Short codes: two ways for the far end to use a tiny code instead of a giant URL:
   --to <client> : scoped, single-use code via the Vercel mediator (needs S3TX_MEDIATOR
                   + S3TX_ADMIN_TOKEN); the client authenticates with its TX_CLIENT_ID.
   --code <code> : code stored in a private S3 manifest, no third party (far end seeds
-                  TX_MANIFEST — see 's3tx manifest-url').
+                  TX_MANIFEST; see 's3tx manifest-url').
 
 Config via env: S3TX_PROFILE (default s3tx), S3TX_BUCKET (default s3tx),
 S3TX_REGION (default us-east-1), S3TX_EXPIRES (default 600 = 10 min),
@@ -64,7 +64,7 @@ PROFILE = os.environ.get("S3TX_PROFILE", "s3tx")
 BUCKET = os.environ.get("S3TX_BUCKET", "s3tx")
 REGION = os.environ.get("S3TX_REGION", "us-east-1")
 EXPIRES = _int_env("S3TX_EXPIRES", 600)
-MAX_EXPIRES = 604800  # 7 days — SigV4's hard cap for pre-signed URLs
+MAX_EXPIRES = 604800  # 7 days, SigV4's hard cap for pre-signed URLs
 MANIFEST_KEY = os.environ.get("S3TX_MANIFEST_KEY", ".s3tx-manifest")
 MEDIATOR = os.environ.get("S3TX_MEDIATOR", "").rstrip("/")
 ADMIN_TOKEN = os.environ.get("S3TX_ADMIN_TOKEN", "")
@@ -84,12 +84,12 @@ Examples:
   s3tx recv KEY                          download a file
   s3tx rm KEY                            delete one object
 
-Many files, far end → you:   
+Many files, far end -> you:
     (Mac)      s3tx drop bundle.tgz --to laptop
     (far end)  tar czf - f1 dir/ | tx put - CODE
     (Mac)      s3tx recv bundle.tgz             (then: tar xzf bundle.tgz)
 
-Many files, you → far end:
+Many files, you -> far end:
     (Mac)      tar czf - file1 dir/ | s3tx send - bundle.tgz --to laptop
     (far end)  tx get CODE                      (then: tar xzf bundle.tgz)
 """
@@ -202,11 +202,11 @@ def _public_state(s3):
     try:
         pab = s3.get_public_access_block(Bucket=BUCKET)["PublicAccessBlockConfiguration"]
     except Exception:
-        return False, "no Block-Public-Access config set — run: s3tx lockdown"
+        return False, "no Block-Public-Access config set; run: s3tx lockdown"
     flags = ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
     if all(pab.get(f) for f in flags):
         return True, "private (all four Block-Public-Access flags ON)"
-    return False, "PARTIALLY OPEN — run: s3tx lockdown"
+    return False, "PARTIALLY OPEN; run: s3tx lockdown"
 
 
 def _manifest_read(s3):
@@ -326,14 +326,14 @@ def cmd_send(args):
             die("reading from stdin needs an explicit key, e.g. s3tx send - bundle.tgz --to laptop")
         key = args.key
         s3, _ = _preflight()
-        info(f"Uploading (stdin) → s3://{BUCKET}/{key} ...")
+        info(f"Uploading (stdin) to s3://{BUCKET}/{key} ...")
         s3.upload_fileobj(sys.stdin.buffer, BUCKET, key)  # boto3 multipart: handles a pipe
     else:
         if not os.path.isfile(args.file):
             die(f"file not found: {args.file}")
         key = args.key or os.path.basename(args.file)
         s3, _ = _preflight()
-        info(f"Uploading {args.file} → s3://{BUCKET}/{key} ...")
+        info(f"Uploading {args.file} to s3://{BUCKET}/{key} ...")
         s3.upload_file(args.file, BUCKET, key)
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=args.expires
@@ -378,9 +378,9 @@ def cmd_drop(args):
         return
     ok(f"Upload link for s3://{BUCKET}/{args.key} (far end needs no AWS creds):")
     print(url)
-    info("\nOn the far end (a laptop, a Pi, …):")
+    info("\nOn the far end (a laptop, a Pi, ...):")
     print(f'  tx put <localfile> "{url}"')
-    info("  …or with plain curl:")
+    info("  ...or with plain curl:")
     print(f'  curl -X PUT --upload-file <localfile> "{url}"')
     info(f"Then pull it here:  s3tx recv {args.key}")
     _expiry_note(args.expires)
@@ -389,7 +389,7 @@ def cmd_drop(args):
 def cmd_recv(args):
     s3, _ = _preflight()
     out = args.outfile or os.path.basename(args.key)
-    info(f"Downloading s3://{BUCKET}/{args.key} → {out} ...")
+    info(f"Downloading s3://{BUCKET}/{args.key} to {out} ...")
     s3.download_file(BUCKET, args.key, out)
     ok(f"Saved {out}")
 
@@ -463,11 +463,11 @@ def cmd_manifest_url(args):
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": MANIFEST_KEY}, ExpiresIn=days * 86400
     )
-    ok(f"Manifest seed URL (valid {days} day(s) — SigV4 max is 7):")
+    ok(f"Manifest seed URL (valid {days} day(s); SigV4 allows at most 7):")
     print(url)
     info("\nSeed it on the far end once, then 'tx get <code>' works:")
     print(f'  export TX_MANIFEST="{url}"')
-    info("  …or persist it (tx reads this when the env var is unset):")
+    info("  ...or persist it (tx reads this when the env var is unset):")
     print(f'  mkdir -p ~/.config/tx && printf %s "{url}" > ~/.config/tx/manifest.url')
 
 

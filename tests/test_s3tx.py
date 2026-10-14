@@ -1,4 +1,4 @@
-"""Unit tests for s3tx — pure logic only, no AWS calls.
+"""Unit tests for s3tx: pure logic only, no AWS calls.
 
 The s3tx CLI has no .py extension and a PEP 723 header, so we load it as a module
 by path. Importing it does not pull in boto3 (that import is lazy), so these tests
@@ -31,7 +31,7 @@ def test_gen_code_length_and_alphabet():
 
 
 def test_code_alphabet_excludes_ambiguous_chars():
-    # No 0/O/1/l/I — codes are meant to be transcribed by a human.
+    # No 0/O/1/l/I: codes are meant to be transcribed by a human.
     assert set(s3tx._CODE_ALPHABET).isdisjoint(set("01loIO"))
 
 
