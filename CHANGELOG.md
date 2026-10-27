@@ -8,6 +8,16 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+### Added
+
+- `tx get <code> <folder>` saves the file into an existing folder under its own name (the
+  last part of its URL), as `tx get <code>` does in the current folder.
+
+### Changed
+
+- `tx get` checks that its target folder exists and can be written before it resolves a
+  code, so a mistyped folder no longer spends a single-use code.
+
 ## [1.3.0] - 2026-10-14
 
 ### Added

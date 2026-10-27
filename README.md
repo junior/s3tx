@@ -145,6 +145,7 @@ use and where each one comes from, with secrets masked.
 ```sh
 tx get <code>              # resolve a code, then download
 tx get <code> out.pdf      # ...to a chosen filename
+tx get <code> /tmp/        # ...into a folder, under the file's own name
 tx put ./photo.jpg <code>  # upload a file to a `drop` code (use - for stdin)
 tx get "<https url>"       # a raw pre-signed URL works too, with no config at all
 ```

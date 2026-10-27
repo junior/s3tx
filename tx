@@ -15,7 +15,7 @@
 # Portable to anything with a POSIX shell + curl: Linux, WSL, Raspberry Pi, ...
 #
 # Usage:
-#   tx [--profile NAME] get <url|code> [outfile]   download
+#   tx [--profile NAME] get <url|code> [outfile]   download, to a file or into a folder
 #   tx [--profile NAME] put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
 #   tx [--profile NAME] config                     show the settings in use
 #   tx help
@@ -39,6 +39,9 @@ Options, before the command:
 
 A value starting with http(s):// is used as-is; otherwise it is a short code,
 resolved via \$TX_MEDIATOR (+ \$TX_CLIENT_ID) or \$TX_MANIFEST.
+
+With no outfile, or with a folder as the outfile, get keeps the file's own name:
+the last part of its URL.
 EOF
 }
 
@@ -211,17 +214,33 @@ case "$cmd" in
     ;;
   get)
     [ $# -ge 2 ] || die "usage: $prog get <url|code> [outfile]"
+    out=${3:-} into=
+    # Check the target folder before resolving: a code works only once, so a wrong
+    # folder must not spend it. An outfile that is a folder keeps the file's own name.
+    if [ -n "$out" ] && [ -d "$out" ]; then
+      into=$out folder=$out
+    else
+      case $out in
+        */) folder=$out ;;
+        */*) folder=${out%/*}/ ;;
+        *) folder=. ;;
+      esac
+      [ -d "$folder" ] || die "folder not found: $folder"
+    fi
+    [ -w "$folder" ] || die "cannot write into folder: $folder"
     url=$(resolve "$2")
-    out=${3:-}
     tmp=$(mktemp 2>/dev/null) || tmp="./.tx.$$.tmp"
     printf 'Downloading ...\n' >&2
     eff=$(curl -fSL --connect-timeout 15 --progress-bar -o "$tmp" -w '%{url_effective}' "$url") \
       || { rm -f "$tmp"; die "download failed: link expired/wrong/revoked, or host blocked here"; }
-    if [ -z "$out" ]; then
-      out=${eff%%\?*}
-      out=${out##*/}
-      [ -n "$out" ] || out=download
+    if [ -z "$out" ] || [ -n "$into" ]; then
+      name=${eff%%\?*}
+      name=${name##*/}
+      [ -n "$name" ] || name=download
+      if [ -n "$into" ]; then out=${into%/}/$name; else out=$name; fi
     fi
+    # A folder of that name in the way: keep the download, since the code is spent.
+    [ ! -d "$out" ] || die "$out is a folder; the download is in $tmp"
     mv -f "$tmp" "$out"
     printf 'Saved %s\n' "$out" >&2
     ;;

@@ -110,6 +110,55 @@ def test_a_failed_get_leaves_nothing_behind(tx, server):
     assert list(tx.work.iterdir()) == [] and list(tx.tmp.iterdir()) == []
 
 
+@pytest.mark.parametrize("folder", ["into", "into/"])
+def test_get_into_a_folder_keeps_the_name_in_the_url(tx, server, folder):
+    server.files["report.txt"] = b"hello\n"
+    (tx.work / "into").mkdir()
+    r = tx("get", f"{server.url}/files/report.txt?X-Amz-Signature=abc", folder)
+    assert r.returncode == 0, r.stderr
+    assert (tx.work / "into" / "report.txt").read_bytes() == b"hello\n"
+    assert b"Saved into/report.txt" in r.stderr
+
+
+def test_get_a_code_into_the_temp_folder(tx, server):
+    # Linux's mktemp downloads into TMPDIR first, so `tx get CODE /tmp/` used to end in
+    # mv refusing to move the file onto itself, after the code was spent
+    server.files["r.txt"] = b"via a code"
+    _register(server, "Code2345", f"{server.url}/files/r.txt")
+    r = tx("get", "Code2345", f"{tx.tmp}/", env=_mediator_env(server))
+    assert r.returncode == 0, r.stderr
+    assert [p.name for p in tx.tmp.iterdir()] == ["r.txt"]
+    assert (tx.tmp / "r.txt").read_bytes() == b"via a code"
+
+
+@pytest.mark.parametrize("target", ["nowhere/", "nowhere/r.txt"])
+def test_a_missing_folder_is_refused_before_the_code_is_spent(tx, server, target):
+    _register(server, "Code2345", f"{server.url}/files/r.txt")
+    r = tx("get", "Code2345", target, env=_mediator_env(server))
+    assert r.returncode == 1 and b"folder not found: nowhere/" in r.stderr
+    assert "Code2345" in server.codes and server.requests == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write into any folder")
+def test_a_read_only_folder_is_refused_before_the_code_is_spent(tx, server):
+    _register(server, "Code2345", f"{server.url}/files/r.txt")
+    (tx.work / "ro").mkdir(mode=0o555)
+    r = tx("get", "Code2345", "ro", env=_mediator_env(server))
+    assert r.returncode == 1 and b"cannot write into folder: ro" in r.stderr
+    assert "Code2345" in server.codes and server.requests == []
+
+
+def test_a_folder_in_the_way_keeps_the_download(tx, server):
+    server.files["report.txt"] = b"hello\n"
+    (tx.work / "into" / "report.txt").mkdir(parents=True)
+    r = tx("get", f"{server.url}/files/report.txt", "into")
+    assert r.returncode == 1 and b"into/report.txt is a folder" in r.stderr
+    kept = re.search(rb"the download is in (\S+)", r.stderr).group(1).decode()
+    with open(kept, "rb") as f:
+        assert f.read() == b"hello\n"
+    os.remove(kept)  # mktemp's file: in TMPDIR on Linux, but a Mac's mktemp ignores TMPDIR
+
+
 def test_get_a_code_through_the_mediator(tx, server):
     server.files["r.txt"] = b"via a code"
     _register(server, "Code2345", f"{server.url}/files/r.txt")
