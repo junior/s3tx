@@ -8,6 +8,8 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-26
+
 ### Added
 
 - `tx get <code> <folder>` saves the file into an existing folder under its own name (the
@@ -114,7 +116,8 @@ between tx and the mediator.
   policy.
 - `send -` reads stdin.
 
-[Unreleased]: https://github.com/junior/s3tx/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/junior/s3tx/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/junior/s3tx/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/junior/s3tx/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/junior/s3tx/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/junior/s3tx/compare/v1.0.0...v1.1.0

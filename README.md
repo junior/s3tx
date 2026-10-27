@@ -31,7 +31,7 @@ Raspberry Pi) downloads or uploads with plain `curl`: no AWS account, no CLI, no
 `s3tx` is one file. Take it from a release tag, so you know which version you run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.3.0/s3tx -o ~/.local/bin/s3tx
+curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.4.0/s3tx -o ~/.local/bin/s3tx
 chmod +x ~/.local/bin/s3tx        # make sure ~/.local/bin is on your $PATH
 s3tx --version
 ```
@@ -98,7 +98,7 @@ only `curl`. It runs anywhere with a shell: Linux, WSL, a Raspberry Pi, even a p
 **Install** it on the far-end machine:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.3.0/tx -o ~/.local/bin/tx
+curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.4.0/tx -o ~/.local/bin/tx
 chmod +x ~/.local/bin/tx          # make sure ~/.local/bin is on your $PATH
 ```
 
