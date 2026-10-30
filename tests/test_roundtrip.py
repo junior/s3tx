@@ -247,3 +247,28 @@ def test_a_generic_s3_profile_end_to_end(s3_endpoint, server, tmp_path):
         for o in s3.list_objects_v2(Bucket="generic-bucket").get("Contents", []):
             s3.delete_object(Bucket="generic-bucket", Key=o["Key"])
         s3.delete_bucket(Bucket="generic-bucket")
+
+
+@pytest.mark.parametrize("bucket, verdict", [("s3tx", "No failures;"), ("absent", "Error:")])
+def test_doctor_gives_its_verdict_last_even_through_a_pipe(
+    sides, s3_endpoint, server, bucket, verdict
+):
+    # A pipe buffers stdout, where the checks go, and not stderr, where the verdict goes.
+    _s3tx, _tx, mac, _far = sides
+    env = {
+        **os.environ,
+        "AWS_ENDPOINT_URL": s3_endpoint,
+        "S3TX_MEDIATOR": server.url,
+        "S3TX_ADMIN_TOKEN": harness.ADMIN_TOKEN,
+        "S3TX_BUCKET": bucket,
+    }
+    r = subprocess.run(
+        [sys.executable, str(harness.S3TX), "doctor"],
+        cwd=mac,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=120,
+    )
+    lines = r.stdout.decode().strip().splitlines()
+    assert len(lines) > 5 and lines[-1].startswith(verdict), lines

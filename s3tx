@@ -857,18 +857,25 @@ def cmd_doctor(args):
     if not tx:
         line("skip", "tx is not on PATH here; only the far ends need it")
     else:
+        got, why = "", ""
         try:
             run = subprocess.run([tx, "version"], capture_output=True, text=True, timeout=10)
             got = run.stdout.strip()
-        except Exception:
-            got = ""
+            why = run.stderr.strip() or f"exit status {run.returncode}"
+        except Exception as e:
+            why = e.__class__.__name__
         if got == f"tx {__version__}":
             line("ok", f"{got} at {tx}")
         elif got.startswith("tx "):
             line("warn", f"{got} at {tx}, not {__version__}: check the far ends' too")
-        else:
+        elif "unknown command" in why:  # what a tx before 1.5.0 answers
             line("warn", f"tx at {tx} is older than 1.5.0 (no 'tx version'): update it")
+        else:
+            line("warn", f"tx at {tx} did not say its version: {why.splitlines()[-1][:100]}")
 
+    # The checks went to stdout, the verdict goes to stderr when there is something to see:
+    # flush first, or a pipe, which buffers stdout, would print the verdict before them.
+    sys.stdout.flush()
     if counts["fail"]:
         die(f"{counts['fail']} check(s) failed.")
     (warn if counts["warn"] else ok)(

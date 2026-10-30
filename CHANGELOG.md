@@ -8,6 +8,13 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+### Fixed
+
+- `s3tx doctor` gives its verdict after the checks, also when its output goes through a
+  pipe, which used to print the verdict first.
+- `s3tx doctor` calls a `tx` older than 1.5.0 only when it answers that it has no `version`
+  command; a `tx` that fails for another reason is reported with its error.
+
 ## [1.5.0] - 2026-10-29
 
 ### Added

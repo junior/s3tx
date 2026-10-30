@@ -622,3 +622,16 @@ def test_doctor_warns_about_a_tx_too_old_to_say_its_version(cli, bucket, monkeyp
     code, out, _ = cli("doctor")
     assert code == 0
     assert _state(_checks(out), f"tx at {old} is older than 1.5.0") == "warn"
+
+
+def test_doctor_says_why_a_tx_that_fails_did_not_say_its_version(
+    cli, bucket, monkeypatch, tmp_path
+):
+    broken = tmp_path / "tx"
+    broken.write_text("#!/bin/sh\necho 'tx: curl is required but was not found' >&2\nexit 1\n")
+    broken.chmod(0o755)
+    monkeypatch.setattr(shutil, "which", lambda n, *a, **k: str(broken) if n == "tx" else None)
+    code, out, _ = cli("doctor")
+    assert code == 0
+    start = f"tx at {broken} did not say its version: tx: curl is required but was not found"
+    assert _state(_checks(out), start) == "warn"
