@@ -5,12 +5,12 @@
   "type": "module",
   "description": "Mediator for s3tx/tx: maps a short, scoped, single-use code to a pre-signed S3 URL.",
   "engines": {
-    "node": ">=18"
+    "node": "26.x"
   },
   "scripts": {
     "test": "node --import ./test/setup.mjs --test test/*.test.mjs"
   },
   "dependencies": {
-    "@upstash/redis": "^1.34.0"
+    "@upstash/redis": "^1.40.0"
   }
 }

@@ -1,8 +1,11 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.10"
-# dependencies = ["boto3"]
+# requires-python = ">=3.9"
+# dependencies = ["boto3>=1.36"]
 # ///
+# Supported: Python 3.11 or later. 3.9 and 3.10 are past their end of life but still run
+# s3tx (CI checks 3.9, the jump hosts' Python), so the bound above stays low. boto3 1.36
+# brought the checksum settings that S3-compatible servers need.
 """
 s3tx: move files in and out of a locked-down environment through a PRIVATE S3
 bucket, using time-limited pre-signed URLs.
@@ -33,7 +36,8 @@ Short codes: two ways for the far end to use a tiny code instead of a giant URL:
   --code <code> : code stored in a private S3 manifest, no third party (far end seeds
                   TX_MANIFEST; see 's3tx manifest-url').
 
-Settings: S3TX_AWS_PROFILE (default s3tx), S3TX_BUCKET (default s3tx), S3TX_REGION
+Settings: S3TX_AWS_PROFILE (default s3tx), S3TX_BUCKET (set it: the built-in s3tx goes
+away in 2.0), S3TX_REGION
 (default us-east-1), S3TX_ENDPOINT_URL + S3TX_CA_BUNDLE (an S3-compatible server instead
 of AWS), S3TX_EXPIRES (default 600 = 10 min), S3TX_MANIFEST_KEY (default .s3tx-manifest),
 S3TX_MEDIATOR + S3TX_ADMIN_TOKEN (for --to). Set them in the environment or in
@@ -42,6 +46,7 @@ S3TX_MEDIATOR + S3TX_ADMIN_TOKEN (for --to). Set them in the environment or in
 
 import argparse
 import contextlib
+import hashlib
 import os
 import re
 import secrets
@@ -97,6 +102,7 @@ Examples:
   s3tx recv KEY                          download a file
   s3tx rm KEY                            delete one object
   s3tx --profile NAME config             what the [NAME] profile sets
+  s3tx doctor                            check the whole setup
 
 Many files, far end -> you:
     (Mac)      s3tx drop bundle.tgz --to laptop
@@ -317,10 +323,20 @@ def _on_aws(s3):
     return host.endswith((".amazonaws.com", ".amazonaws.com.cn"))
 
 
+def _warn_builtin_bucket():
+    """The built-in S3TX_BUCKET is the author's own bucket's name: 2.0 drops it."""
+    if CONFIG_SETTINGS.get("S3TX_BUCKET", ("", ""))[1] == "built-in":
+        warn(
+            f"S3TX_BUCKET is not set, so s3tx uses its built-in default '{BUCKET}'. Set it in "
+            f"{_config_path()}: s3tx 2.0 drops the default."
+        )
+
+
 def _preflight():
     """Verify credentials and that the bucket already exists. Never creates anything.
     On AWS the credentials are checked with STS; an S3-compatible server has no STS, so
     there the bucket check alone stands for both. Returns (s3, identity or None)."""
+    _warn_builtin_bucket()
     s3 = _s3()
     ident = None
     if _on_aws(s3):
@@ -479,6 +495,29 @@ def _emit_get(s3, key, url, args):
     _expiry_note(lives)
 
 
+class _HashingReader:
+    """A stream that keeps the SHA-256 of everything read through it."""
+
+    def __init__(self, raw):
+        self._raw = raw
+        self.sha256 = hashlib.sha256()
+
+    def read(self, size=-1):
+        data = self._raw.read(size)
+        self.sha256.update(data)
+        return data
+
+
+def _file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# send records the file's SHA-256 as object metadata; S3 returns it with every download
+# as x-amz-meta-sha256, and tx get checks the file against it.
 def cmd_send(args):
     if args.file == "-":
         if not args.key:
@@ -486,14 +525,32 @@ def cmd_send(args):
         key = args.key
         s3, _ = _preflight()
         info(f"Uploading (stdin) to s3://{BUCKET}/{key} ...")
-        s3.upload_fileobj(sys.stdin.buffer, BUCKET, key)  # boto3 multipart: handles a pipe
+        stream = _HashingReader(sys.stdin.buffer)
+        s3.upload_fileobj(stream, BUCKET, key)  # boto3 multipart: handles a pipe
+        # A pipe's digest is known only at its end: record it by copying the object onto
+        # itself with the new metadata, which S3 does without the data passing through here.
+        try:
+            s3.copy(
+                {"Bucket": BUCKET, "Key": key},
+                BUCKET,
+                key,
+                ExtraArgs={
+                    "Metadata": {"sha256": stream.sha256.hexdigest()},
+                    "MetadataDirective": "REPLACE",
+                },
+            )
+        except Exception as e:
+            warn(
+                f"Could not record the SHA-256 ({e.__class__.__name__}): tx get will not check it."
+            )
     else:
         if not os.path.isfile(args.file):
             die(f"file not found: {args.file}")
         key = args.key or os.path.basename(args.file)
         s3, _ = _preflight()
         info(f"Uploading {args.file} to s3://{BUCKET}/{key} ...")
-        s3.upload_file(args.file, BUCKET, key)
+        meta = {"Metadata": {"sha256": _file_sha256(args.file)}}
+        s3.upload_file(args.file, BUCKET, key, ExtraArgs=meta)
     url = s3.generate_presigned_url(
         "get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=args.expires
     )
@@ -654,6 +711,174 @@ def cmd_config(args):
         print(f"{key}={shown}  [{source}]")
 
 
+def _http_status(url, data=None, headers=None):
+    """(status, Date header, None) for a request, or (None, None, reason) when nothing
+    answered. data makes it a POST."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, data=data, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, r.headers.get("Date"), None
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Date"), None
+    except Exception as e:
+        return None, None, str(getattr(e, "reason", "") or e.__class__.__name__)
+
+
+def cmd_doctor(args):
+    """Check the setup end to end, one line per check, and exit 1 when one fails."""
+    global _SESSION
+    import shutil
+    import subprocess
+    from email.utils import parsedate_to_datetime
+
+    counts = {"ok": 0, "warn": 0, "fail": 0, "skip": 0}
+
+    def line(state, text):
+        color = {"ok": "32", "warn": "33", "fail": "31", "skip": "36"}[state]
+        label = (state.upper() if state == "fail" else state).ljust(4)
+        print(f"{_c(color, label)}  {text}")
+        counts[state] += 1
+
+    # The tool itself.
+    py = ".".join(str(n) for n in sys.version_info[:3])
+    try:
+        import boto3
+    except ImportError:
+        boto3 = None
+    what = f"s3tx {__version__}, Python {py}" + (f", boto3 {boto3.__version__}" if boto3 else "")
+    if boto3 is None:
+        line("fail", f"{what}: boto3 is not installed (uv installs it when it runs s3tx)")
+    elif sys.version_info < (3, 11):
+        line("warn", f"{what}: Python {py} is past its end of life; s3tx supports 3.11 or later")
+    else:
+        line("ok", what)
+
+    # The config file and the bucket setting.
+    path = _config_path()
+    if not path.is_file():
+        line("skip", f"no {path}: the settings come from the environment and the defaults")
+    elif path.stat().st_mode & 0o077:
+        line("warn", f"{path} is readable by other users, and it can hold a token: chmod 600 it")
+    else:
+        line("ok", f"config {path}, profile [{CONFIG_PROFILE}]")
+    if CONFIG_SETTINGS.get("S3TX_BUCKET", ("", ""))[1] == "built-in":
+        line("warn", f"S3TX_BUCKET is the built-in default '{BUCKET}': set it, s3tx 2.0 drops it")
+
+    # Storage: the credentials, the bucket, and on AWS its Block Public Access.
+    server_date = None
+    if boto3 is not None:
+        from botocore.exceptions import ProfileNotFound
+
+        where = f"profile '{PROFILE}'" if PROFILE else "the default credential chain"
+        try:
+            _SESSION = boto3.Session(profile_name=PROFILE or None, region_name=REGION)
+        except ProfileNotFound:
+            line("fail", f"AWS profile '{PROFILE}' not found: aws configure --profile {PROFILE}")
+        else:
+            s3 = _s3()
+            aws = _on_aws(s3)
+            if aws:
+                try:
+                    arn = _session().client("sts").get_caller_identity()["Arn"]
+                    line("ok", f"credentials, {where}: {arn}")
+                except Exception as e:
+                    line("fail", f"credentials, {where}: not usable ({e.__class__.__name__})")
+            else:
+                line("skip", f"credentials: not checked, {s3.meta.endpoint_url} is not AWS")
+            try:
+                head = s3.head_bucket(Bucket=BUCKET)
+            except Exception as e:
+                line("fail", f"bucket s3://{BUCKET}: not accessible ({e.__class__.__name__})")
+            else:
+                hdrs = head.get("ResponseMetadata", {}).get("HTTPHeaders", {})
+                region = hdrs.get("x-amz-bucket-region") or s3.meta.region_name
+                server_date = hdrs.get("date")
+                line("ok", f"bucket s3://{BUCKET} in {region}")
+                if not aws:
+                    line(
+                        "skip", "public access: not checked, Block Public Access is an AWS setting"
+                    )
+                else:
+                    if region != s3.meta.region_name:
+                        s3 = _s3(region)
+                    private, desc = _public_state(s3)
+                    line("ok" if private else "fail", f"public access: {desc}")
+
+    # The mediator, and whether it takes the admin token.
+    if not MEDIATOR:
+        line("skip", "no S3TX_MEDIATOR: --to codes are off, --code still works")
+    else:
+        status, date, why = _http_status(f"{MEDIATOR}/api/get/Doctor0check")
+        server_date = server_date or date
+        if status is None:
+            line("fail", f"mediator {MEDIATOR}: unreachable ({why})")
+        elif status == 401:
+            line("ok", f"mediator {MEDIATOR} answers")
+        else:
+            line(
+                "warn", f"mediator {MEDIATOR} answered HTTP {status}, not 401: is it the mediator?"
+            )
+        if not ADMIN_TOKEN:
+            line("warn", "no S3TX_ADMIN_TOKEN: --to cannot register codes")
+        elif status is not None:
+            # An empty registration: with a good token it is refused as a bad code (400),
+            # and nothing is stored.
+            reg, _, why = _http_status(
+                f"{MEDIATOR}/api/register",
+                data=b"{}",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {ADMIN_TOKEN}",
+                },
+            )
+            if reg == 400:
+                line("ok", "the mediator accepts S3TX_ADMIN_TOKEN (checked without registering)")
+            elif reg == 401:
+                line("fail", "the mediator refuses S3TX_ADMIN_TOKEN")
+            else:
+                line("warn", f"the admin token check got {reg or why}, not 400")
+
+    # The clock: SigV4 signatures fail when it is more than 15 minutes off.
+    try:
+        skew = abs(time.time() - parsedate_to_datetime(server_date).timestamp())
+    except (TypeError, ValueError):
+        skew = None
+    if skew is None:
+        line("skip", "clock: not checked, no server answered with its time")
+    elif skew <= 60:
+        line("ok", f"clock: within {int(skew)}s of the server's")
+    elif skew <= 900:
+        line("warn", f"clock: {int(skew)}s off the server's; links still work, but set the time")
+    else:
+        line("fail", f"clock: {int(skew)}s off the server's; AWS refuses signatures 15 min off")
+
+    # tx here, if any: the far ends run the same release.
+    tx = shutil.which("tx")
+    if not tx:
+        line("skip", "tx is not on PATH here; only the far ends need it")
+    else:
+        try:
+            run = subprocess.run([tx, "version"], capture_output=True, text=True, timeout=10)
+            got = run.stdout.strip()
+        except Exception:
+            got = ""
+        if got == f"tx {__version__}":
+            line("ok", f"{got} at {tx}")
+        elif got.startswith("tx "):
+            line("warn", f"{got} at {tx}, not {__version__}: check the far ends' too")
+        else:
+            line("warn", f"tx at {tx} is older than 1.5.0 (no 'tx version'): update it")
+
+    if counts["fail"]:
+        die(f"{counts['fail']} check(s) failed.")
+    (warn if counts["warn"] else ok)(
+        f"No failures; {counts['warn']} warning(s) above." if counts["warn"] else "All checks pass."
+    )
+
+
 def cmd_codes(args):
     s3, _ = _preflight()
     now = int(time.time())
@@ -767,6 +992,7 @@ def main():
     sp.add_argument("--days", type=int, default=7, metavar="N", help="lifetime in days (max 7)")
     add("codes", cmd_codes, "list live manifest codes")
     add("config", cmd_config, "show the settings in effect and where they come from")
+    add("doctor", cmd_doctor, "check the setup end to end, and say what to fix")
     add("help", lambda a: p.print_help(), "show this help")
 
     args = p.parse_args()

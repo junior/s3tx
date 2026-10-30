@@ -18,11 +18,13 @@
 #   tx [--profile NAME] get <url|code> [outfile]   download, to a file or into a folder
 #   tx [--profile NAME] put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
 #   tx [--profile NAME] config                     show the settings in use
+#   tx version                                     print tx's version
 #   tx help
 
 set -eu
 
 prog=tx
+version=1.4.0 # the release's; the tests hold it equal to s3tx's __version__
 
 die() { printf '%s: %s\n' "$prog" "$*" >&2; exit 1; }
 
@@ -32,6 +34,7 @@ Usage:
   $prog get <url|code> [outfile]   download (code via TX_MEDIATOR or TX_MANIFEST)
   $prog put <file|-> <url|code>    upload a file (or '-' = stdin) via HTTP PUT
   $prog config                     show the settings in use, secrets masked
+  $prog version                    print tx's version
   $prog help
 
 Options, before the command:
@@ -41,7 +44,8 @@ A value starting with http(s):// is used as-is; otherwise it is a short code,
 resolved via \$TX_MEDIATOR (+ \$TX_CLIENT_ID) or \$TX_MANIFEST.
 
 With no outfile, or with a folder as the outfile, get keeps the file's own name:
-the last part of its URL.
+the last part of its URL. When s3tx recorded the file's SHA-256, get checks the
+download against it.
 EOF
 }
 
@@ -189,14 +193,32 @@ resolve() {
     c=$(curl -sS --connect-timeout 10 --max-time 25 -o "$t" -w '%{http_code}' \
         -H "X-Client-Id: $_cid" "$_med/api/get/$1") \
         || { rm -f "$t"; die "mediator unreachable (timed out: is $_med blocked here?)"; }
-    if [ "$c" != 200 ]; then m=$(cat "$t"); rm -f "$t"; die "mediator refused: $m (HTTP $c)"; fi
-    u=$(cat "$t"); rm -f "$t"; printf '%s' "$u"; return
+    if [ "$c" = 200 ]; then u=$(cat "$t"); rm -f "$t"; printf '%s' "$u"; return; fi
+    m=$(cat "$t"); rm -f "$t"
+    # A code the mediator does not know may be a manifest code: try the manifest next,
+    # when this machine has one. Any other refusal stands.
+    if [ "$c" != 404 ] || [ -z "$(manifest_seed)" ]; then die "mediator refused: $m (HTTP $c)"; fi
   fi
   seed=$(manifest_seed)
   [ -n "$seed" ] || die "'$1' is not a URL and neither TX_MEDIATOR nor TX_MANIFEST is set"
   u=$(curl -fsSL --connect-timeout 10 --max-time 25 "$seed" | awk -F'\t' -v k="$1" '$1==k{print $3; f=1} END{exit !f}') \
     || die "code '$1' not found (manifest empty, code wrong, or seed expired/unreachable)"
   printf '%s' "$u"
+}
+
+# Echo the mode a new file gets here, 666 less the umask, one digit at a time: no shell
+# then has to read a leading 0 as octal (zsh, for one, does not).
+new_file_mode() {
+  u=$(umask); u=${u#"${u%???}"}; mid=${u#?}
+  printf '%s%s%s' "$((6 & ~${u%??}))" "$((6 & ~${mid%?}))" "$((6 & ~${u#??}))"
+}
+
+# Echo the SHA-256 of file "$1" with whichever tool this machine has, or nothing.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" | awk '{ print $1 }'
+  elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 < "$1" | awk '{ print $NF }'
+  fi
 }
 
 cmd=${1:-help}
@@ -230,9 +252,26 @@ case "$cmd" in
     [ -w "$folder" ] || die "cannot write into folder: $folder"
     url=$(resolve "$2")
     tmp=$(mktemp 2>/dev/null) || tmp="./.tx.$$.tmp"
+    hdr=$(mktemp 2>/dev/null) || hdr="./.tx.$$.hdr"
     printf 'Downloading ...\n' >&2
-    eff=$(curl -fSL --connect-timeout 15 --progress-bar -o "$tmp" -w '%{url_effective}' "$url") \
-      || { rm -f "$tmp"; die "download failed: link expired/wrong/revoked, or host blocked here"; }
+    eff=$(curl -fSL --connect-timeout 15 --progress-bar -D "$hdr" -o "$tmp" -w '%{url_effective}' "$url") \
+      || { rm -f "$tmp" "$hdr"; die "download failed: link expired/wrong/revoked, or host blocked here"; }
+    # s3tx send records the file's SHA-256 with the object, and S3 returns it as a header.
+    want=$(awk 'tolower($1) == "x-amz-meta-sha256:" { v = $2 } END { sub(/\r$/, "", v); print tolower(v) }' "$hdr")
+    rm -f "$hdr"
+    case $want in *[!0-9a-f]*) want= ;; esac
+    [ ${#want} -eq 64 ] || want=
+    checked=
+    if [ -n "$want" ]; then
+      got=$(sha256_of "$tmp")
+      if [ -z "$got" ]; then
+        printf 'Not verified: there is no sha256sum, shasum or openssl here\n' >&2
+      elif [ "$got" != "$want" ]; then
+        die "the download does not match the SHA-256 s3tx recorded; it is kept in $tmp"
+      else
+        checked=", SHA-256 verified"
+      fi
+    fi
     if [ -z "$out" ] || [ -n "$into" ]; then
       name=${eff%%\?*}
       name=${name##*/}
@@ -241,8 +280,10 @@ case "$cmd" in
     fi
     # A folder of that name in the way: keep the download, since the code is spent.
     [ ! -d "$out" ] || die "$out is a folder; the download is in $tmp"
+    # mktemp made the file 0600: give it the mode a new file gets here, as curl -o would.
+    chmod "$(new_file_mode)" "$tmp"
     mv -f "$tmp" "$out"
-    printf 'Saved %s\n' "$out" >&2
+    printf 'Saved %s%s\n' "$out" "$checked" >&2
     ;;
   put)
     [ $# -ge 3 ] || die "usage: $prog put <file|-> <url|code>"
@@ -266,6 +307,9 @@ case "$cmd" in
     fi
     [ -z "$tmp" ] || rm -f "$tmp"
     printf 'Uploaded %s\n' "$label" >&2
+    ;;
+  version | --version)
+    printf '%s %s\n' "$prog" "$version"
     ;;
   help | -h | --help | "")
     usage

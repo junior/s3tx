@@ -28,6 +28,12 @@ Security properties:
 - **URL allow-list**: register rejects any URL that isn't an `https://...amazonaws.com`
   host. Set `ALLOWED_URL_HOST` to pin the exact bucket host, or to the host of an
   S3-compatible server when s3tx uses one (`S3TX_ENDPOINT_URL`).
+- **Never cached**: every answer carries `Cache-Control: no-store`, so no proxy on the
+  way, a TLS-inspecting corporate one included, keeps a copy of a URL.
+- **Pinned runtime and dependencies**: `package.json` pins the Node.js major
+  (`engines.node`, which Vercel takes over the dashboard setting) and `package-lock.json`
+  the exact dependencies; CI installs them with `npm ci` and fails on any `npm audit`
+  finding.
 
 ## One-time setup
 

@@ -4,6 +4,7 @@ mediator and for presigned URLs. Nothing here talks to AWS or to the internet.""
 import importlib.machinery
 import importlib.util
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,13 +54,15 @@ class FakeServer:
                           when the code is already live
       GET /api/get/CODE   X-Client-Id: CLIENT_ID -> 200 text/plain URL, single use, or a
                           4xx with a short text reason
-    File side, standing in for presigned URLs: GET and PUT /files/NAME, GET /manifest.
+    File side, standing in for presigned URLs: GET and PUT /files/NAME (a GET answers
+    with any headers set in file_headers[NAME]), GET /manifest.
     """
 
     def __init__(self):
         self.requests = []  # every request: method, path, headers, body
         self.codes = {}  # code -> {"url", "client", "method", "ttl"}
         self.files = {}  # name -> bytes
+        self.file_headers = {}  # name -> {header: value} sent with that file, as S3 does
         self.manifest = ""
         self.register_replies = []  # queued (status, payload) answers for /api/register
         server = self
@@ -68,12 +71,14 @@ class FakeServer:
             def log_message(self, *_args):  # keep test output quiet
                 pass
 
-            def _reply(self, status, body=b"", ctype="text/plain; charset=utf-8"):
+            def _reply(self, status, body=b"", ctype="text/plain; charset=utf-8", extra=None):
                 if isinstance(body, str):
                     body = body.encode()
                 self.send_response(status)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
+                for name, value in (extra or {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -101,7 +106,12 @@ class FakeServer:
                     return self._json(401, {"error": "unauthorized"})
                 if server.register_replies:
                     return self._json(*server.register_replies.pop(0))
-                req = json.loads(body)
+                try:
+                    req = json.loads(body or b"{}")
+                except ValueError:
+                    req = {}
+                if not re.fullmatch(r"[A-Za-z0-9]{6,32}", str(req.get("code", ""))):
+                    return self._json(400, {"error": "bad code"})
                 if req["code"] in server.codes:
                     return self._json(409, {"error": "code exists"})
                 ttl = min(max(int(req.get("ttl") or 600), 30), 900)
@@ -117,6 +127,8 @@ class FakeServer:
                 self._record()
                 path = urlsplit(self.path).path
                 if path.startswith("/api/get/"):
+                    if self.headers.get("X-Client-Id") is None:
+                        return self._reply(401, "missing X-Client-Id")
                     if self.headers.get("X-Client-Id") != CLIENT_ID:
                         return self._reply(403, "unknown client")
                     code = path[len("/api/get/") :]
@@ -131,7 +143,8 @@ class FakeServer:
                     return self._reply(200, server.manifest)
                 name = path[len("/files/") :] if path.startswith("/files/") else None
                 if name in server.files:
-                    return self._reply(200, server.files[name], "application/octet-stream")
+                    extra = server.file_headers.get(name)
+                    return self._reply(200, server.files[name], "application/octet-stream", extra)
                 return self._reply(404, "NoSuchKey")
 
             def do_PUT(self):

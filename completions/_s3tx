@@ -1,0 +1,88 @@
+#compdef s3tx
+# zsh completion for s3tx: its commands and options, local files where a command takes
+# one, and profile names from ~/.config/s3tx/config. S3 keys and client names are not
+# looked up: that would need the network on every TAB. Homebrew installs this file; by
+# hand, copy it into a directory on $fpath and run compinit.
+
+_s3tx_profiles() {
+  local -a names
+  names=(${(f)"$(sed -n 's/^[[:space:]]*\[[[:space:]]*\([A-Za-z0-9_.-]*\)[[:space:]]*\].*/\1/p' \
+    ~/.config/s3tx/config 2>/dev/null)"})
+  _describe -t profiles 'profile' names
+}
+
+_s3tx() {
+  local curcontext=$curcontext state line ret=1
+  local -a commands common expiry
+  commands=(
+    'send:upload a file, print a download link for the far end'
+    'link:make a fresh code/link for an object already in the bucket'
+    'drop:print an UPLOAD link so the far end can push a file (no creds)'
+    'recv:download an object to this machine'
+    'ls:list objects in the bucket'
+    'rm:delete one object'
+    'rmrf:delete EVERY object in the bucket (asks for confirmation)'
+    'status:show identity, bucket, and confirm the bucket is private'
+    'lockdown:force Block-Public-Access ON and remove any bucket policy'
+    'manifest-url:print a long-lived seed URL to the manifest (for TX_MANIFEST)'
+    'codes:list live manifest codes'
+    'config:show the settings in effect and where they come from'
+    'doctor:check the setup end to end, and say what to fix'
+    'help:show this help'
+  )
+  common=('--profile[use the \[NAME\] section of ~/.config/s3tx/config]:profile:_s3tx_profiles')
+  expiry=('--expires[link lifetime in seconds]:seconds:')
+
+  _arguments -C $common \
+    '(- *)--version[print the version]' \
+    '(- *)'{-h,--help}'[show the help]' \
+    '1: :->command' \
+    '*:: :->args' && ret=0
+
+  case $state in
+    command)
+      _describe -t commands 's3tx command' commands && ret=0
+      ;;
+    args)
+      curcontext=${curcontext%:*:*}:s3tx-$words[1]:
+      case $words[1] in
+        send)
+          _arguments $common $expiry \
+            '--to[single-use code via the mediator for CLIENT]:client:' \
+            '--code=-[short code in the S3 manifest (none: generate one)]::code:' \
+            '1:file (- for stdin):_files' \
+            '2::S3 key:' && ret=0
+          ;;
+        link)
+          _arguments $common $expiry \
+            '--to[single-use code via the mediator for CLIENT]:client:' \
+            '--code=-[short code in the S3 manifest (none: generate one)]::code:' \
+            '1:S3 key:' && ret=0
+          ;;
+        drop)
+          _arguments $common $expiry \
+            '--to[single-use UPLOAD code via the mediator for CLIENT]:client:' \
+            '1:S3 key:' && ret=0
+          ;;
+        recv)
+          _arguments $common '1:S3 key:' '2::local path:_files' && ret=0
+          ;;
+        ls)
+          _arguments $common '1::key prefix:' && ret=0
+          ;;
+        rm)
+          _arguments $common '1:S3 key:' && ret=0
+          ;;
+        manifest-url)
+          _arguments $common '--days[lifetime in days, at most 7]:days:(1 2 3 4 5 6 7)' && ret=0
+          ;;
+        *)
+          _arguments $common && ret=0
+          ;;
+      esac
+      ;;
+  esac
+  return ret
+}
+
+_s3tx "$@"

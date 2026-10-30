@@ -3,11 +3,12 @@
 > Move files in and out of a locked-down environment through a **private** S3 bucket,
 > using time-limited pre-signed URLs. The far end needs nothing but `curl`.
 
+[![release](https://img.shields.io/github/v/release/junior/s3tx)](https://github.com/junior/s3tx/releases/latest)
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-![python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![install: single file](https://img.shields.io/badge/install-single%20file-success.svg)
 ![lint: ruff](https://img.shields.io/badge/lint-ruff-261230.svg)
-![CI](https://github.com/junior/s3tx/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/junior/s3tx/actions/workflows/ci.yml/badge.svg)](https://github.com/junior/s3tx/actions/workflows/ci.yml)
 
 `s3tx` runs on a trusted machine (your Mac) that holds AWS credentials. It uploads to a
 bucket that is **never public**, then hands the other end a short-lived signed link, or
@@ -28,7 +29,9 @@ Raspberry Pi) downloads or uploads with plain `curl`: no AWS account, no CLI, no
 
 ## Install (the trusted machine)
 
-`s3tx` is one file. Take it from a release tag, so you know which version you run:
+On a Mac with Homebrew: `brew install junior/tap/s3tx` (the formula follows every
+release, and brings zsh completion). Anywhere else, `s3tx` is one file. Take it from a
+release tag, so you know which version you run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.4.0/s3tx -o ~/.local/bin/s3tx
@@ -38,8 +41,15 @@ s3tx --version
 
 <sub>It needs [uv](https://docs.astral.sh/uv/): the shebang runs `uv run --script`, so the
 first invocation provisions Python and `boto3` by itself, with no virtualenv and no
-`pip install`. To follow development instead, clone the repository and link `s3tx` onto
-your `$PATH`.</sub>
+`pip install`. Supported: Python 3.11 or later. It still runs on 3.9 and 3.10, which are
+past their end of life (CI checks 3.9). For zsh completion without Homebrew, copy
+[`completions/_s3tx`](completions/_s3tx) into a directory on your `$fpath`. To follow
+development instead, clone the repository and link `s3tx` onto your `$PATH`.</sub>
+
+<sub>From 1.5.0 on, every [release](https://github.com/junior/s3tx/releases) attaches
+`s3tx`, `tx` and their `SHA256SUMS`, attested by the workflow that published them, and is
+immutable: `gh release verify vX.Y.Z --repo junior/s3tx` checks a release, and
+`gh attestation verify tx --repo junior/s3tx` a downloaded file.</sub>
 
 One-time AWS setup: a private bucket (Block Public Access on) and an IAM user with the
 policy in [`iam-policy.json`](iam-policy.json), wired to a dedicated profile:
@@ -48,7 +58,11 @@ policy in [`iam-policy.json`](iam-policy.json), wired to a dedicated profile:
 aws configure --profile s3tx
 s3tx status        # confirm the identity + that the bucket is private
 s3tx lockdown      # force Block-Public-Access on, drop any bucket policy
+s3tx doctor        # check it all: credentials, bucket, mediator, clock, tx
 ```
+
+Name your bucket with `S3TX_BUCKET` (see [Configuration](#configuration)): the built-in
+default, `s3tx`, is deprecated and goes away in 2.0.
 
 ## Quickstart
 
@@ -92,15 +106,19 @@ one client, and brute-force is rate-limited. See [`mediator/`](mediator/) to dep
 
 ## The far end (`tx`)
 
-The companion client is [`tx`](tx), a single POSIX-shell script (~120 lines) that needs
-only `curl`. It runs anywhere with a shell: Linux, WSL, a Raspberry Pi, even a phone.
+The companion client is [`tx`](tx), a single POSIX-shell script that needs only `curl`
+(and `awk`). It runs anywhere with a shell: Linux, WSL, a Raspberry Pi, even a phone.
 
 **Install** it on the far-end machine:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.4.0/tx -o ~/.local/bin/tx
 chmod +x ~/.local/bin/tx          # make sure ~/.local/bin is on your $PATH
+tx version
 ```
+
+<sub>To check the file, compare `sha256sum ~/.local/bin/tx` with the `tx` line of that
+release's `SHA256SUMS`.</sub>
 
 That one self-contained file is **all** the far end needs. Don't `git clone` the repo onto a
 locked-down box: the rest (`s3tx`, `mediator/`, the IAM policy) is AWS-side tooling that has
@@ -151,7 +169,11 @@ tx get "<https url>"       # a raw pre-signed URL works too, with no config at a
 ```
 
 Anything starting with `http(s)://` is used directly; otherwise it's treated as a short
-code and resolved via the mediator or the manifest.
+code and resolved via the mediator, or the manifest when the mediator does not know it.
+`tx get` checks the target folder before it redeems a code, since a code works once. When
+the file came from `s3tx send`, `tx get` also checks it against the SHA-256 s3tx recorded,
+with `sha256sum`, `shasum` or `openssl`, whichever the box has; a file that does not match
+is kept aside, never saved under its name. `tx version` says which release a box runs.
 
 ## Commands
 
@@ -169,6 +191,7 @@ code and resolved via the mediator or the manifest.
 | `manifest-url` | print a long-lived seed URL for `--code` (max 7 days) |
 | `codes` | list live manifest codes |
 | `config` | show the settings in use and where each comes from (secrets masked) |
+| `doctor` | check the setup end to end and say what to fix; exits 1 when a check fails |
 | `--profile NAME` | before or after any command: use the `[NAME]` profile |
 | `--version` | print the version and exit |
 
@@ -203,6 +226,7 @@ It is read, never executed, and `tx` uses the same format for its own file.
 
 ```ini
 # the default profile: AWS, and a mediator on Vercel
+S3TX_BUCKET=your-bucket
 S3TX_MEDIATOR=https://your-mediator.vercel.app
 S3TX_ADMIN_TOKEN=your-admin-token
 
@@ -218,7 +242,7 @@ S3TX_ADMIN_TOKEN=that-mediators-admin-token
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `S3TX_AWS_PROFILE` | `s3tx` | AWS credentials profile; empty uses the standard boto3 chain (`S3TX_PROFILE` is its older name) |
-| `S3TX_BUCKET` | `s3tx` | bucket name |
+| `S3TX_BUCKET` | `s3tx`, deprecated | bucket name; set it, since 2.0 drops the default (s3tx warns until then) |
 | `S3TX_REGION` | `us-east-1` | bucket region; on AWS the bucket's own region is detected and used |
 | `S3TX_ENDPOINT_URL` | (AWS) | an S3-compatible server to use instead of AWS |
 | `S3TX_CA_BUNDLE` | (system) | CA bundle that verifies that server's certificate |
@@ -248,6 +272,10 @@ default; for another server, set the mediator's `ALLOWED_URL_HOST` to its host n
 - **Manifest codes** (`--code`) are simpler but weaker: the *seed URL* from
   `s3tx manifest-url` (valid up to 7 days) grants read of the whole manifest. Prefer `--to`
   when you have the mediator, and treat the seed URL itself as a secret.
+- Every mediator answer is marked `Cache-Control: no-store`, so no proxy on the way keeps a
+  URL, and a file sent with `s3tx send` is checked end to end by its SHA-256.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## The mediator
 
@@ -262,7 +290,7 @@ short-lived URLs and never your AWS credentials. Setup and the threat model are 
 uvx ruff check .                                                   # lint
 uvx ruff format .                                                  # format
 uv run --with-requirements tests/requirements.txt python -m pytest tests/
-(cd mediator && npm test)                                          # mediator handlers
+(cd mediator && npm ci --ignore-scripts && npm audit && npm test)  # mediator handlers
 ```
 
 No test needs AWS, a deployed mediator or Redis: `s3tx` runs against moto, `tx` runs
@@ -272,16 +300,22 @@ gaps are tests marked `xfail(strict=True)` or `todo` that describe the intended 
 The command line is pinned in `tests/golden/cli-contract.json`; after a deliberate change,
 regenerate it with `UPDATE_GOLDEN=1` and review its diff.
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of this, plus
-`node --check` on the mediator functions and `shellcheck` on `tx`.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of this on Python
+3.11 and the newest Python, and on 3.9, which is unsupported but has to keep working; the
+mediator on the Node.js its `package.json` pins, after `npm audit`; and `shellcheck` on
+`tx`. It also runs by hand on any branch (`gh workflow run ci.yml --ref BRANCH`).
 
 ### Releasing
 
-1. Set `__version__` in `s3tx`, date the Unreleased section of
+1. Set `__version__` in `s3tx` and `version` in `tx`, date the Unreleased section of
    [`CHANGELOG.md`](CHANGELOG.md), and move the install lines above to the new tag. The
-   tests fail until the three agree.
+   tests fail until they agree.
 2. Merge, then tag the release commit, signed (`git tag -s vX.Y.Z <commit>`), and push the
-   tag.
+   tag. The [release workflow](.github/workflows/release.yml) checks that the tag names the
+   same version, publishes the GitHub Release with the CHANGELOG section as its notes and
+   `s3tx`, `tx` and `SHA256SUMS` attached and attested, and then points the Homebrew
+   formula in `junior/homebrew-tap` at the tag. A tag with a hyphen is a pre-release and
+   leaves the formula alone.
 
 ## License
 

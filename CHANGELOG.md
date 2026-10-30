@@ -8,6 +8,48 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+### Added
+
+- `s3tx doctor` checks the setup end to end, one line per check: the versions, the config
+  file, the credentials, the bucket and its Block Public Access, the mediator and the
+  admin token (with an empty request that registers nothing), the clock against the
+  servers', and the `tx` on this machine. It exits 1 when a check fails.
+- `s3tx send` records the file's SHA-256 with the object, and `tx get` checks the
+  download against it with `sha256sum`, `shasum` or `openssl`. A download that does not
+  match is kept aside, never saved under its name.
+- `tx version` (and `tx --version`) prints tx's version, which is s3tx's.
+- zsh completion for s3tx, in `completions/_s3tx`; the Homebrew formula installs it.
+- A workflow publishes each release: the GitHub Release takes its notes from this file
+  and carries `s3tx`, `tx` and their `SHA256SUMS`, with build-provenance attestations;
+  the Homebrew formula follows once the release is out.
+- `SECURITY.md`: how to report a vulnerability.
+
+### Changed
+
+- Supported Python: 3.11 or later; CI tests 3.11 and 3.15. Python 3.9 and 3.10 are past
+  their end of life but still run s3tx, and CI keeps checking 3.9.
+- s3tx asks for boto3 1.36 or later, the first with the checksum settings that
+  S3-compatible servers need.
+- `tx get` saves a file with the mode the umask gives a new file, as `curl -o` does,
+  instead of 0600.
+- The mediator runs on Node.js 26, pinned in its `package.json`, with its dependencies
+  locked in `package-lock.json`; CI fails on any `npm audit` finding.
+
+### Deprecated
+
+- The built-in `S3TX_BUCKET` (`s3tx`). Set the bucket in the config file or the
+  environment: s3tx warns until it is set, and 2.0 drops the default.
+
+### Fixed
+
+- `tx get` falls back to the manifest when the mediator does not know a code, so a
+  manifest code works on a machine that also has a mediator.
+
+### Security
+
+- Every mediator answer carries `Cache-Control: no-store`, so no proxy on the way keeps a
+  pre-signed URL.
+
 ## [1.4.0] - 2026-10-26
 
 ### Added

@@ -3,6 +3,7 @@ sh is dash, a Mac's is bash), with a throwaway HOME and a local stand-in for the
 mediator and for presigned URLs. Tests marked xfail(strict=True) describe intended
 behaviour that differs from today's."""
 
+import hashlib
 import json
 import os
 import re
@@ -74,6 +75,14 @@ def test_help(tx, args):
     r = tx(*args)
     assert r.returncode == 0
     assert b"tx get <url|code> [outfile]" in r.stdout and b"tx put <file|-> <url|code>" in r.stdout
+    assert b"tx version" in r.stdout
+
+
+@pytest.mark.parametrize("arg", ["version", "--version"])
+def test_the_version_is_s3txs(tx, s3tx, arg):
+    r = tx(arg)
+    assert r.returncode == 0
+    assert r.stdout == f"tx {s3tx.__version__}\n".encode()
 
 
 def test_an_unknown_command(tx):
@@ -256,11 +265,6 @@ def test_one_setting_in_the_environment_and_the_other_in_the_config(tx, server):
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="with TX_MEDIATOR set, resolve() never falls back to the manifest, so a "
-    "manifest code fails on a machine that also has a mediator",
-)
 def test_a_manifest_code_on_a_machine_with_a_mediator(tx, server):
     server.files["m.txt"] = b"x"
     server.manifest = f"Mani2345\t9999999999\t{server.url}/files/m.txt\n"
@@ -269,14 +273,47 @@ def test_a_manifest_code_on_a_machine_with_a_mediator(tx, server):
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="tx get keeps mktemp's 0600 mode instead of the umask, unlike curl -o or wget",
-)
-def test_get_honours_the_umask(tx, server):
+def test_only_a_code_the_mediator_does_not_know_falls_back_to_the_manifest(tx, server):
+    server.manifest = f"Mani2345\t9999999999\t{server.url}/files/m.txt\n"
+    env = {"TX_MEDIATOR": server.url, "TX_CLIENT_ID": "stranger"}
+    r = tx("get", "Mani2345", env={**env, "TX_MANIFEST": f"{server.url}/manifest"})
+    assert r.returncode == 1
+    assert b"mediator refused: unknown client (HTTP 403)" in r.stderr
+
+
+@pytest.mark.parametrize("umask, mode", [(0o022, 0o644), (0o027, 0o640), (0o077, 0o600)])
+def test_get_honours_the_umask(tx, server, umask, mode):
     server.files["run.sh"] = b"#!/bin/sh\necho hi\n"
-    assert tx("get", f"{server.url}/files/run.sh", umask=0o022).returncode == 0
-    assert stat.S_IMODE((tx.work / "run.sh").stat().st_mode) == 0o644
+    assert tx("get", f"{server.url}/files/run.sh", umask=umask).returncode == 0
+    assert stat.S_IMODE((tx.work / "run.sh").stat().st_mode) == mode
+
+
+def test_get_checks_the_sha256_s3tx_recorded(tx, server):
+    server.files["r.txt"] = b"hello\n"
+    server.file_headers["r.txt"] = {"X-Amz-Meta-Sha256": hashlib.sha256(b"hello\n").hexdigest()}
+    r = tx("get", f"{server.url}/files/r.txt")
+    assert r.returncode == 0, r.stderr
+    assert b"Saved r.txt, SHA-256 verified" in r.stderr
+
+
+def test_a_download_that_does_not_match_its_sha256_is_kept_aside(tx, server):
+    server.files["r.txt"] = b"hello\n"
+    server.file_headers["r.txt"] = {"x-amz-meta-sha256": hashlib.sha256(b"other").hexdigest()}
+    r = tx("get", f"{server.url}/files/r.txt")
+    assert r.returncode == 1 and b"does not match the SHA-256 s3tx recorded" in r.stderr
+    assert not (tx.work / "r.txt").exists()
+    kept = re.search(rb"it is kept in (\S+)", r.stderr).group(1).decode()
+    with open(kept, "rb") as f:
+        assert f.read() == b"hello\n"
+    os.remove(kept)  # mktemp's file: in TMPDIR on Linux, but a Mac's mktemp ignores TMPDIR
+
+
+def test_a_sha256_header_that_is_not_one_is_ignored(tx, server):
+    server.files["r.txt"] = b"hello\n"
+    server.file_headers["r.txt"] = {"x-amz-meta-sha256": "not-a-digest"}
+    r = tx("get", f"{server.url}/files/r.txt")
+    assert r.returncode == 0, r.stderr
+    assert b"Saved r.txt\n" in r.stderr
 
 
 # --- put --------------------------------------------------------------------------

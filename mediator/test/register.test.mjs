@@ -35,6 +35,12 @@ test("a missing or wrong admin token is refused", async () => {
   }
 });
 
+test("no answer may be cached", async () => {
+  for (const res of [await post(good()), await post(good(), {})]) {
+    assert.equal(res.headers["cache-control"], "no-store");
+  }
+});
+
 test("the Bearer prefix is case-insensitive", async () => {
   assert.equal((await post(good(), { authorization: "bearer admin-secret" })).statusCode, 200);
 });

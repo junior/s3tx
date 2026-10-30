@@ -29,8 +29,12 @@ function clients() {
   return { ...parseMap(process.env.CLIENTS), ...parseMap(process.env.CLIENTS_EXTRA) };
 }
 
+// A 200 carries a bearer URL: no proxy or browser along the way may keep a copy, and
+// a corporate proxy that inspects TLS is a cache like any other.
 function text(res, status, body) {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   return res.status(status).send(body);
 }
 

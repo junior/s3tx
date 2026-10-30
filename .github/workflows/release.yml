@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # A version tag becomes a GitHub Release: its notes are the tag's CHANGELOG section,
+  # and its assets are s3tx, tx and their SHA256SUMS, with build-provenance attestations
+  # (`gh attestation verify tx --repo junior/s3tx`). The release is made as a draft and
+  # published once complete: with immutable releases on, a published release can no
+  # longer change. A tag with a hyphen is published as a pre-release.
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the GitHub Release and its assets
+      id-token: write # the attestations' keyless signatures
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The tag, s3tx, tx and the CHANGELOG name one version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          v=${TAG#v}
+          grep -qx "__version__ = \"$v\"" s3tx || { echo "s3tx's __version__ is not $v" >&2; exit 1; }
+          grep -Eq "^version=$v( |$)" tx || { echo "tx's version is not $v" >&2; exit 1; }
+          grep -q "^## \[$v\] - " CHANGELOG.md || { echo "CHANGELOG.md has no [$v] section" >&2; exit 1; }
+      - name: Release notes from the CHANGELOG, the assets and their checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          python3 - "${TAG#v}" > "$RUNNER_TEMP/notes.md" <<'EOF'
+          import re, sys
+          v = sys.argv[1]
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          head = rf"^## \[{re.escape(v)}\][^\n]*\n"
+          m = re.search(head + r"(.*?)(?=^## \[|^\[[^\]\n]+\]: |\Z)", text, re.S | re.M)
+          if not m:
+              sys.exit(f"CHANGELOG.md has no section for {v}")
+          print(m.group(1).strip())
+          EOF
+          mkdir dist
+          cp s3tx tx dist/
+          (cd dist && sha256sum s3tx tx > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Attest the assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Draft the release, attach the assets, then publish it
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          pre=
+          case "$TAG" in *-*) pre=--prerelease ;; esac
+          gh release create "$TAG" --draft --verify-tag ${pre:+"$pre"} \
+            --title "s3tx ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/s3tx dist/tx dist/SHA256SUMS
+          gh release edit "$TAG" --draft=false
+
+  # The Homebrew tap follows a full release: the formula in junior/homebrew-tap gets
+  # this tag and its source tarball's checksum, committed and pushed with
+  # HOMEBREW_TAP_TOKEN, a fine-grained token with read and write access to the
+  # contents of that one repository, kept as a secret here. A pre-release tag (a
+  # hyphen in its name) leaves the tap alone, and so does a release that failed.
+  tap:
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: junior/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Point the formula at this tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          url="https://github.com/junior/s3tx/archive/refs/tags/${TAG}.tar.gz"
+          for attempt in 1 2 3 4 5 6; do
+            curl -sSfL -o /tmp/src.tar.gz "$url" && break
+            [ "$attempt" -lt 6 ] || { echo "no tarball at ${url}" >&2; exit 1; }
+            sleep 10
+          done
+          sha=$(sha256sum /tmp/src.tar.gz | cut -d' ' -f1)
+          sed -i -e "s|/archive/refs/tags/v[^\"]*\.tar\.gz|/archive/refs/tags/${TAG}.tar.gz|" \
+                 -e "s|sha256 \"[0-9a-f]\{64\}\"|sha256 \"${sha}\"|" Formula/s3tx.rb
+          if git diff --quiet; then
+            echo "the formula already points at ${TAG}"
+            exit 0
+          fi
+          git config user.name "junior"
+          git config user.email "junior@users.noreply.github.com"
+          git commit -am "s3tx ${TAG#v}"
+          git push

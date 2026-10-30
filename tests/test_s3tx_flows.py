@@ -3,8 +3,10 @@ works today, pinned so later changes cannot lose it. Tests marked xfail(strict=T
 describe the intended behaviour where today's differs; a fix makes them pass, and
 strict mode then fails until the marker is removed."""
 
+import hashlib
 import json
 import re
+import shutil
 import socket
 import time
 from types import SimpleNamespace
@@ -66,6 +68,19 @@ def test_send_reads_stdin_when_the_file_is_a_dash(cli, bucket):
     assert code == 0
     assert bucket.get_object(Bucket="s3tx", Key="bundle.tgz")["Body"].read() == b"tarball bytes"
     assert "(stdin)" in out
+
+
+def test_send_records_the_files_sha256_for_tx_to_check(cli, bucket, report):
+    assert cli("send", str(report))[0] == 0
+    meta = bucket.head_object(Bucket="s3tx", Key="report.pdf")["Metadata"]
+    assert meta == {"sha256": hashlib.sha256(report.read_bytes()).hexdigest()}
+
+
+def test_send_from_stdin_records_the_sha256_too(cli, bucket):
+    assert cli("send", "-", "bundle.tgz", stdin=b"tarball bytes")[0] == 0
+    meta = bucket.head_object(Bucket="s3tx", Key="bundle.tgz")["Metadata"]
+    assert meta == {"sha256": hashlib.sha256(b"tarball bytes").hexdigest()}
+    assert bucket.get_object(Bucket="s3tx", Key="bundle.tgz")["Body"].read() == b"tarball bytes"
 
 
 def test_send_from_stdin_needs_a_key(cli, bucket):
@@ -489,6 +504,19 @@ def test_a_missing_bucket_is_never_created(s3tx, cli, bucket, monkeypatch):
     assert names == ["s3tx"]
 
 
+def test_the_built_in_bucket_comes_with_a_warning(cli, bucket):
+    code, _, err = cli("ls")
+    assert code == 0
+    assert "S3TX_BUCKET is not set, so s3tx uses its built-in default 's3tx'" in err
+    assert "s3tx 2.0 drops the default" in err
+
+
+def test_a_bucket_that_is_set_brings_no_warning(cli, bucket, monkeypatch):
+    monkeypatch.setenv("S3TX_BUCKET", "s3tx")
+    code, _, err = cli("ls")
+    assert code == 0 and "S3TX_BUCKET" not in err
+
+
 def test_an_unknown_profile_fails_clearly(s3tx, cli, bucket, monkeypatch):
     monkeypatch.setenv("S3TX_AWS_PROFILE", "nope")
     code, _, err = cli("ls")
@@ -514,3 +542,83 @@ def test_version_needs_no_credentials(s3tx, cli):
     assert code == 0
     assert out == f"s3tx {s3tx.__version__}\n"
     assert re.fullmatch(r"\d+\.\d+\.\d+", s3tx.__version__)
+
+
+# --- doctor -----------------------------------------------------------------------
+
+
+def _checks(out):
+    """{text: state} for doctor's report lines ("ok    text", "FAIL  text", ...)."""
+    return {line[6:]: line[:4].strip() for line in out.splitlines() if line[4:6] == "  "}
+
+
+def _state(checks, start):
+    (state,) = [s for text, s in checks.items() if text.startswith(start)]
+    return state
+
+
+@pytest.fixture
+def repo_tx(monkeypatch):
+    """This repository's tx as the one on PATH, so doctor finds the release's own."""
+    real = shutil.which
+    monkeypatch.setattr(
+        shutil, "which", lambda n, *a, **k: str(harness.TX) if n == "tx" else real(n, *a, **k)
+    )
+
+
+def test_doctor_on_a_good_setup(s3tx, cli, bucket, server, monkeypatch, repo_tx):
+    monkeypatch.setenv("S3TX_BUCKET", "s3tx")
+    _use_mediator(s3tx, server, monkeypatch)
+    code, out, err = cli("doctor")
+    assert code == 0, out + err
+    checks = _checks(out)
+    assert "FAIL" not in checks.values(), out
+    for start in ("bucket s3://s3tx in us-east-1", "public access: private", "credentials,"):
+        assert _state(checks, start) == "ok", out
+    assert _state(checks, f"mediator {server.url} answers") == "ok"
+    assert _state(checks, "the mediator accepts S3TX_ADMIN_TOKEN") == "ok"
+    assert _state(checks, "clock: within") == "ok"
+    assert _state(checks, f"tx {s3tx.__version__} at ") == "ok"
+    assert server.codes == {}  # the token check registers nothing
+
+
+def test_doctor_fails_on_a_missing_bucket(cli, bucket, monkeypatch, repo_tx):
+    monkeypatch.setenv("S3TX_BUCKET", "absent-bucket")
+    code, out, err = cli("doctor")
+    assert code == 1
+    assert _state(_checks(out), "bucket s3://absent-bucket: not accessible") == "FAIL"
+    assert "1 check(s) failed" in err
+
+
+def test_doctor_reports_a_refused_admin_token(cli, bucket, server, monkeypatch, repo_tx):
+    monkeypatch.setenv("S3TX_MEDIATOR", server.url)
+    monkeypatch.setenv("S3TX_ADMIN_TOKEN", "not-the-token")
+    code, out, _ = cli("doctor")
+    assert code == 1
+    assert _state(_checks(out), "the mediator refuses S3TX_ADMIN_TOKEN") == "FAIL"
+
+
+def test_doctor_fails_on_an_unreachable_mediator(cli, bucket, monkeypatch, repo_tx):
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        closed = f"http://127.0.0.1:{s.getsockname()[1]}"
+    monkeypatch.setenv("S3TX_MEDIATOR", closed)
+    code, out, _ = cli("doctor")
+    assert code == 1
+    assert _state(_checks(out), f"mediator {closed}: unreachable") == "FAIL"
+
+
+def test_doctor_warns_about_the_built_in_bucket(cli, bucket, repo_tx):
+    code, out, _ = cli("doctor")
+    assert code == 0  # no mediator set: skipped, not failed
+    assert _state(_checks(out), "S3TX_BUCKET is the built-in default 's3tx'") == "warn"
+
+
+def test_doctor_warns_about_a_tx_too_old_to_say_its_version(cli, bucket, monkeypatch, tmp_path):
+    old = tmp_path / "tx"
+    old.write_text("#!/bin/sh\necho 'tx: unknown command: version' >&2\nexit 1\n")
+    old.chmod(0o755)
+    monkeypatch.setattr(shutil, "which", lambda n, *a, **k: str(old) if n == "tx" else None)
+    code, out, _ = cli("doctor")
+    assert code == 0
+    assert _state(_checks(out), f"tx at {old} is older than 1.5.0") == "warn"

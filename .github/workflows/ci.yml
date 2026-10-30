@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # a run on any branch, before it reaches main
 
 permissions:
   contents: read
@@ -13,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ["3.10", "3.14"] # the oldest s3tx supports, and the newest
+        python: ["3.11", "3.15"] # the oldest s3tx supports, and the newest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -24,13 +25,31 @@ jobs:
       - name: Test (s3tx and tx against local stand-ins for S3 and the mediator)
         run: uv run --python ${{ matrix.python }} --with-requirements tests/requirements.txt python -m pytest tests/ -q -rxX
 
+  # Python 3.9 is past its end of life and unsupported, but it is the jump hosts'
+  # Python, and s3tx has to keep running there. The test tools come unpinned: the
+  # newest releases that still install on 3.9.
+  python-3_9:
+    name: python (3.9, unsupported)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Test on Python 3.9
+        run: uv run --python 3.9 --with "boto3>=1.36" --with "moto[server]" --with pytest python -m pytest tests/ -q -rxX
+
   mediator:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24" # what the Vercel project runs
+          node-version: "26" # what the Vercel project runs: engines in package.json
+      - name: Install the locked dependencies
+        working-directory: mediator
+        run: npm ci --ignore-scripts
+      - name: Audit them for known vulnerabilities
+        working-directory: mediator
+        run: npm audit
       - name: Syntax-check mediator functions
         working-directory: mediator
         run: |

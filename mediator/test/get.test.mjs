@@ -56,6 +56,14 @@ test("the owner redeems a code for its URL, as plain text", async () => {
   assert.equal(res.headers["content-type"], "text/plain; charset=utf-8");
 });
 
+test("no answer may be cached, the URL above all", async () => {
+  await seed("Abcd2345");
+  for (const res of [await get("Abcd2345", "laptop-secret"), await get("Abcd2345")]) {
+    assert.equal(res.headers["cache-control"], "no-store");
+    assert.equal(res.headers["x-content-type-options"], "nosniff");
+  }
+});
+
 test("a code works once", async () => {
   await seed("Abcd2345");
   assert.equal((await get("Abcd2345", "laptop-secret")).statusCode, 200);
