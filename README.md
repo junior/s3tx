@@ -34,7 +34,7 @@ release, and brings zsh completion). Anywhere else, `s3tx` is one file. Take it 
 release tag, so you know which version you run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.4.0/s3tx -o ~/.local/bin/s3tx
+curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.5.0/s3tx -o ~/.local/bin/s3tx
 chmod +x ~/.local/bin/s3tx        # make sure ~/.local/bin is on your $PATH
 s3tx --version
 ```
@@ -112,7 +112,7 @@ The companion client is [`tx`](tx), a single POSIX-shell script that needs only 
 **Install** it on the far-end machine:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.4.0/tx -o ~/.local/bin/tx
+curl -fsSL https://raw.githubusercontent.com/junior/s3tx/v1.5.0/tx -o ~/.local/bin/tx
 chmod +x ~/.local/bin/tx          # make sure ~/.local/bin is on your $PATH
 tx version
 ```

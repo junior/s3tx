@@ -53,7 +53,7 @@ import sys
 import time
 from pathlib import Path
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 
 def _as_int(name, raw, default):

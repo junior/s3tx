@@ -8,6 +8,8 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-29
+
 ### Added
 
 - `s3tx doctor` checks the setup end to end, one line per check: the versions, the config
@@ -158,7 +160,8 @@ between tx and the mediator.
   policy.
 - `send -` reads stdin.
 
-[Unreleased]: https://github.com/junior/s3tx/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/junior/s3tx/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/junior/s3tx/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/junior/s3tx/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/junior/s3tx/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/junior/s3tx/compare/v1.1.0...v1.2.0
