@@ -8,6 +8,8 @@ between tx and the mediator.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-29
+
 ### Fixed
 
 - `s3tx doctor` gives its verdict after the checks, also when its output goes through a
@@ -167,7 +169,8 @@ between tx and the mediator.
   policy.
 - `send -` reads stdin.
 
-[Unreleased]: https://github.com/junior/s3tx/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/junior/s3tx/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/junior/s3tx/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/junior/s3tx/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/junior/s3tx/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/junior/s3tx/compare/v1.2.0...v1.3.0

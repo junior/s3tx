@@ -24,7 +24,7 @@
 set -eu
 
 prog=tx
-version=1.5.0 # the release's; the tests hold it equal to s3tx's __version__
+version=1.5.1 # the release's; the tests hold it equal to s3tx's __version__
 
 die() { printf '%s: %s\n' "$prog" "$*" >&2; exit 1; }
 
