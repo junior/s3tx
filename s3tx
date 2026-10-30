@@ -1,11 +1,10 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.11"
 # dependencies = ["boto3>=1.36"]
 # ///
-# Supported: Python 3.11 or later. 3.9 and 3.10 are past their end of life but still run
-# s3tx (CI checks 3.9, the jump hosts' Python), so the bound above stays low. boto3 1.36
-# brought the checksum settings that S3-compatible servers need.
+# uv fetches a Python 3.11 or later when the machine has none. boto3 1.36 brought the
+# checksum settings that S3-compatible servers need.
 """
 s3tx: move files in and out of a locked-down environment through a PRIVATE S3
 bucket, using time-limited pre-signed URLs.
@@ -751,8 +750,6 @@ def cmd_doctor(args):
     what = f"s3tx {__version__}, Python {py}" + (f", boto3 {boto3.__version__}" if boto3 else "")
     if boto3 is None:
         line("fail", f"{what}: boto3 is not installed (uv installs it when it runs s3tx)")
-    elif sys.version_info < (3, 11):
-        line("warn", f"{what}: Python {py} is past its end of life; s3tx supports 3.11 or later")
     else:
         line("ok", what)
 

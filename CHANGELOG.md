@@ -26,8 +26,8 @@ between tx and the mediator.
 
 ### Changed
 
-- Supported Python: 3.11 or later; CI tests 3.11 and 3.15. Python 3.9 and 3.10 are past
-  their end of life but still run s3tx, and CI keeps checking 3.9.
+- s3tx needs Python 3.11 or later (3.10 reaches its end of life this month); uv fetches
+  one when the machine has none. CI tests 3.11 and 3.15.
 - s3tx asks for boto3 1.36 or later, the first with the checksum settings that
   S3-compatible servers need.
 - `tx get` saves a file with the mode the umask gives a new file, as `curl -o` does,

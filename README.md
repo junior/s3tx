@@ -41,8 +41,8 @@ s3tx --version
 
 <sub>It needs [uv](https://docs.astral.sh/uv/): the shebang runs `uv run --script`, so the
 first invocation provisions Python and `boto3` by itself, with no virtualenv and no
-`pip install`. Supported: Python 3.11 or later. It still runs on 3.9 and 3.10, which are
-past their end of life (CI checks 3.9). For zsh completion without Homebrew, copy
+`pip install`; s3tx needs Python 3.11 or later, and uv fetches one when the machine has
+none. For zsh completion without Homebrew, copy
 [`completions/_s3tx`](completions/_s3tx) into a directory on your `$fpath`. To follow
 development instead, clone the repository and link `s3tx` onto your `$PATH`.</sub>
 
@@ -301,9 +301,8 @@ The command line is pinned in `tests/golden/cli-contract.json`; after a delibera
 regenerate it with `UPDATE_GOLDEN=1` and review its diff.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all of this on Python
-3.11 and the newest Python, and on 3.9, which is unsupported but has to keep working; the
-mediator on the Node.js its `package.json` pins, after `npm audit`; and `shellcheck` on
-`tx`. It also runs by hand on any branch (`gh workflow run ci.yml --ref BRANCH`).
+3.11, the oldest s3tx supports, and on the newest Python; the mediator on the Node.js its
+`package.json` pins, after `npm audit`; and `shellcheck` on `tx`. It also runs by hand on any branch (`gh workflow run ci.yml --ref BRANCH`).
 
 ### Releasing
 

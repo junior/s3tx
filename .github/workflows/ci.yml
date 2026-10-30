@@ -25,18 +25,6 @@ jobs:
       - name: Test (s3tx and tx against local stand-ins for S3 and the mediator)
         run: uv run --python ${{ matrix.python }} --with-requirements tests/requirements.txt python -m pytest tests/ -q -rxX
 
-  # Python 3.9 is past its end of life and unsupported, but it is the jump hosts'
-  # Python, and s3tx has to keep running there. The test tools come unpinned: the
-  # newest releases that still install on 3.9.
-  python-3_9:
-    name: python (3.9, unsupported)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-      - name: Test on Python 3.9
-        run: uv run --python 3.9 --with "boto3>=1.36" --with "moto[server]" --with pytest python -m pytest tests/ -q -rxX
-
   mediator:
     runs-on: ubuntu-latest
     steps:

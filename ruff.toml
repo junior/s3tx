@@ -1,6 +1,6 @@
 # s3tx is a single PEP 723 script with no .py extension: tell ruff to lint it too.
 extend-include = ["s3tx"]
-target-version = "py39"  # 3.11+ is supported; 3.9 must still run (the jump hosts)
+target-version = "py311"  # the oldest Python s3tx supports
 line-length = 100
 
 [lint]
