@@ -11,6 +11,6 @@
     "test": "node --import ./test/setup.mjs --test test/*.test.mjs"
   },
   "dependencies": {
-    "@upstash/redis": "^1.40.0"
+    "@upstash/redis": "^1.41.0"
   }
 }
